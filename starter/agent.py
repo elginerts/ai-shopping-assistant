@@ -104,6 +104,10 @@ class Agent:
             # while removing the obsolete preference that follows it.
             category_request = session["messages"][0].split(".", maxsplit=1)[0]
             session["messages"] = [category_request]
+            
+            # The customer's needs have changed, so their answers to the earlier
+            # questions may have changed too. Start asking those questions again.
+            session["asked_attributes"].clear()
         session["messages"].append(user_message)
 
     def _next_question(self, session: dict) -> str | None:

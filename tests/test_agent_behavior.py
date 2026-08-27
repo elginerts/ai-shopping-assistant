@@ -82,18 +82,22 @@ class AgentBehaviorTest(unittest.TestCase):
         self.agent.reset("customer", {})
 
         self.agent.respond("customer", "I'm looking for shoes. I prefer blue.", 1, 10)
-        self.agent.respond(
+        response = self.agent.respond(
             "customer",
             "Actually, ignore my earlier preference. What I need is: red.",
             2,
             10,
         )
 
+
         memory = " ".join(self.agent._sessions["customer"]["messages"]).lower()
         self.assertIn("shoes", memory)
         self.assertIn("red", memory)
         self.assertNotIn("blue", memory)
 
+        # The agent should restart its questions after the customer's needs change.
+        self.assertEqual(response["ask_attribute"], "feature")
+        
     def test_agent_recommends_while_asking_a_question(self) -> None:
         # A follow-up question should not stop the agent from recommending products.
         self.agent.reset("customer", {})
