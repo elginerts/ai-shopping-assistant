@@ -201,13 +201,12 @@ The added tests check that:
 - SQLite FTS5
 - VS Code
 - Git and GitHub
-- Codex for coding assistance, review, testing, and documentation
 
 All score changes were checked using the organizer-provided local evaluator. The final agent itself does not call Codex or another LLM.
 
 ## Contribution
 
-This is a solo submission. I worked on the agent logic, tests, evaluation, and documentation.
+This is a solo submission.
 
 ## Data Attribution
 
