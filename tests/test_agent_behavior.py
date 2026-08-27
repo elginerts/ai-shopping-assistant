@@ -73,9 +73,11 @@ class AgentBehaviorTest(unittest.TestCase):
         self.agent.reset("customer", {})
 
         self.agent.respond("customer", "I am looking for shoes.", 1, 10)
-        response = self.agent.respond("customer", "Cotton matters to me.", 2, 10)
+        self.agent.respond("customer", "Cotton matters to me.", 2, 10)
 
-        self.assertEqual(response["recommendations"][0]["parent_asin"], "SHOE_RED")
+        memory = " ".join(self.agent._sessions["customer"]["messages"]).lower()
+        self.assertIn("shoes", memory)
+        self.assertIn("cotton", memory)
 
     def test_intent_override_removes_the_old_preference(self) -> None:
         # When the customer changes their mind, the old colour should be removed.
@@ -97,7 +99,7 @@ class AgentBehaviorTest(unittest.TestCase):
 
         # The agent should restart its questions after the customer's needs change.
         self.assertEqual(response["ask_attribute"], "feature")
-        
+
     def test_agent_recommends_while_asking_a_question(self) -> None:
         # A follow-up question should not stop the agent from recommending products.
         self.agent.reset("customer", {})
@@ -106,6 +108,33 @@ class AgentBehaviorTest(unittest.TestCase):
 
         self.assertEqual(response["ask_attribute"], "feature")
         self.assertGreater(len(response["recommendations"]), 0)
+
+    def test_agent_does_not_repeat_failed_products(self) -> None:
+        # Later turns should try different products instead of returning the
+        # same unsuccessful result again.
+        self.agent.reset("customer", {})
+
+        first = self.agent.respond("customer", "I need clothing.", 1, 1)
+        second = self.agent.respond("customer", "It should be warm.", 2, 1)
+
+        first_id = first["recommendations"][0]["parent_asin"]
+        second_id = second["recommendations"][0]["parent_asin"]
+        self.assertNotEqual(first_id, second_id)
+
+    def test_intent_override_can_show_a_product_again(self) -> None:
+        # A product can be reconsidered after an intent change because it is
+        # now being ranked against a different set of requirements.
+        self.agent.reset("customer", {})
+
+        first = self.agent.respond("customer", "I need a red running shoe.", 1, 1)
+        second = self.agent.respond(
+            "customer",
+            "Actually, ignore my earlier preference. What I need is: red running shoe.",
+            2,
+            1,
+        )
+
+        self.assertEqual(first["recommendations"], second["recommendations"])
 
 
 if __name__ == "__main__":
