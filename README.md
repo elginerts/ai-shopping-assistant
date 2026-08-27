@@ -10,10 +10,10 @@ Results from the organizer-provided 200-session public development set:
 
 | Metric | Starter baseline | Current agent |
 |---|---:|---:|
-| TechnicalScore | 0.106710 | **0.704846** |
-| Hit Rate@10 | 0.125 | **0.830** |
-| MRR | 0.068034 | **0.509155** |
-| MTTC | 9.81 | **4.145** |
+| TechnicalScore | 0.106710 | **0.785342** |
+| Hit Rate@10 | 0.125 | **0.920** |
+| MRR | 0.068034 | **0.584141** |
+| MTTC | 9.81 | **3.495** |
 | Token usage | 0 | **0** |
 
 These are public-development results and may not represent performance on the private evaluation set.
@@ -22,10 +22,10 @@ These are public-development results and may not represent performance on the pr
 
 | Scenario | Hit Rate@10 | MRR | MTTC |
 |---|---:|---:|---:|
-| Buying | 0.875 | 0.536300 | 3.3125 |
-| Browsing | 0.875 | 0.508522 | 3.6625 |
-| Intent Override | 0.733333 | 0.491508 | 6.4 |
-| Boundary | 0.4 | 0.35 | 7.9 |
+| Buying | 0.950 | 0.616037 | 2.7625 |
+| Browsing | 0.975 | 0.587411 | 2.925 |
+| Intent Override | 0.800 | 0.556746 | 6.033333 |
+| Boundary | 0.600 | 0.385 | 6.3 |
 
 ## What I Changed
 
@@ -39,8 +39,9 @@ I added:
 - Recommendations on the same turn as a follow-up question
 - Intent-override handling when the customer replaces an earlier preference
 - A restarted clarification sequence after an intent change
+- Different recommendations across turns instead of repeating failed products
 - Extra stopwords to reduce noise from common conversational phrases
-- Five tests for the new multi-turn behavior
+- Seven tests for the new multi-turn behavior
 
 ## How It Works
 
@@ -81,6 +82,10 @@ It still recommends products while asking a question, so a clarification turn do
 
 When a customer says to ignore an earlier preference, the agent keeps the original product category but removes the outdated preference. It also restarts its follow-up questions because the new intent may have different requirements.
 
+### Recommendation Diversity
+
+The agent remembers which products it has already shown and leaves them out of later turns. This increases catalog coverage across the ten-turn limit. The seen-product list is cleared after an intent change so previously shown products can be reconsidered under the new requirements.
+
 ### Product Retrieval
 
 Products are stored in an in-memory SQLite FTS5 index. Results are ranked using field-weighted BM25. Titles and categories receive more weight than longer fields such as descriptions.
@@ -94,6 +99,7 @@ The agent is fully local and deterministic. It does not require an LLM, external
 | Baseline | Stateless BM25 | 0.106710 | 0.125 |
 | Version 1 | Conversation memory and follow-up questions | 0.679255 | 0.800 |
 | Version 2 | Restart questions after intent changes | 0.704846 | 0.830 |
+| Version 3 | Avoid repeated products across turns | 0.785342 | 0.920 |
 
 I also tested using profile tags to reorder the questions. It slightly lowered the overall public score, so I did not include that experiment in the current agent.
 
@@ -142,7 +148,7 @@ python3 -m unittest
 Current result:
 
 ```text
-Ran 8 tests
+Ran 10 tests
 OK
 ```
 
@@ -166,7 +172,7 @@ The evaluator writes detailed session results to `results.json`.
 | Model/API cost | $0 |
 | External dependencies | None |
 
-A full evaluation of 200 public sessions took **19.28 seconds** on an Apple Silicon Mac running Python 3.14.7. This is about **96 ms per session**, including catalog indexing and evaluator overhead. Runtime will vary by machine.
+A full evaluation of 200 public sessions took **15.68 seconds** on an Apple Silicon Mac running Python 3.14.7. This is about **78 ms per session**, including catalog indexing and evaluator overhead. Runtime will vary by machine.
 
 ## Tests Added
 
@@ -177,6 +183,8 @@ The added tests check that:
 - Later answers refine the original request
 - An intent change removes the old preference
 - The agent recommends products while asking a question
+- Failed recommendations are not repeated on later turns
+- Products can be reconsidered after an intent change
 
 ## Current Limitations
 

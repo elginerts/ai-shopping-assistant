@@ -23,7 +23,7 @@ QUESTION_ORDER = ("feature", "material", "color", "style", "size")
 
 
 def _text(value: object) -> str:
-    """Convert a catalog field into searchable text."""
+    # Convert each catalog field into text that can be indexed.
     if value is None:
         return ""
     if isinstance(value, dict):
@@ -34,7 +34,7 @@ def _text(value: object) -> str:
 
 
 def _terms(text: str) -> list[str]:
-    """Return unique, meaningful search terms in their original order."""
+    # Keep useful search terms in the same order and remove duplicates.
     terms = (
         token.lower()
         for token in TOKEN_RE.findall(text)
@@ -44,12 +44,8 @@ def _terms(text: str) -> list[str]:
 
 
 class Agent:
-    """Stateful shopping agent using BM25 retrieval and clarification.
-
-    Each session remembers the conversation, allowing later answers to refine
-    the original request. The implementation remains offline and deterministic
-    so it can run under restricted final-judging conditions.
-    """
+    # The agent keeps separate memory for each conversation and uses BM25
+    # retrieval so it can run locally without an external API.
 
     def __init__(self, catalog_path: str | Path = "data/catalog.jsonl") -> None:
         self.catalog_path = Path(catalog_path)
@@ -58,7 +54,7 @@ class Agent:
         self._build_index()
 
     def _build_index(self) -> None:
-        """Load the frozen catalog into an in-memory full-text index."""
+        # Load the product catalog into an in-memory full-text search index.
         cursor = self.connection.cursor()
         cursor.execute(
             "CREATE VIRTUAL TABLE products USING fts5("
@@ -90,47 +86,57 @@ class Agent:
         self.connection.commit()
 
     def reset(self, session_id: str, user_profile: dict) -> None:
-        """Create isolated memory for a new customer session."""
+        # Start a separate memory store for this customer session.
         self._sessions[session_id] = {
             "messages": [],
             "profile": user_profile,
             "asked_attributes": set(),
+            "seen_products": set(),
         }
 
     def _update_memory(self, session: dict, user_message: str) -> None:
-        """Store new information and discard an explicitly overridden preference."""
+        # Store the latest message and remove an old preference when needed.
         if "ignore my earlier preference" in user_message.lower() and session["messages"]:
-            # Preserve the first sentence, which contains the product category,
-            # while removing the obsolete preference that follows it.
+            # Keep the product category, but remove the preference that the
+            # customer has just replaced.
             category_request = session["messages"][0].split(".", maxsplit=1)[0]
             session["messages"] = [category_request]
-            
-            # The customer's needs have changed, so their answers to the earlier
-            # questions may have changed too. Start asking those questions again.
+
+            # Earlier questions and recommendations may be useful again now
+            # that the customer's requirements have changed.
             session["asked_attributes"].clear()
+            session["seen_products"].clear()
         session["messages"].append(user_message)
 
     def _next_question(self, session: dict) -> str | None:
-        """Choose the highest-value attribute not previously requested."""
+        # Ask the next useful attribute that has not already been requested.
         for attribute in QUESTION_ORDER:
             if attribute not in session["asked_attributes"]:
                 session["asked_attributes"].add(attribute)
                 return attribute
         return None
 
-    def _search(self, query: str, top_k: int) -> list[dict]:
-        """Rank products using field-weighted BM25 retrieval."""
+    def _search(self, query: str, top_k: int, seen_products: set[str]) -> list[dict]:
+        # Rank products and leave out items already shown in this session.
         unique_terms = _terms(query)[:40]
         if not unique_terms:
             return []
 
         expression = " OR ".join(f'"{term}"' for term in unique_terms)
+        # Fetch enough results to replace any products filtered out below.
+        search_limit = top_k + len(seen_products)
         rows = self.connection.execute(
             "SELECT parent_asin FROM products WHERE products MATCH ? "
             "ORDER BY bm25(products, 0.0, 6.0, 4.0, 2.5, 2.5, 1.5, 1.0) LIMIT ?",
-            (expression, top_k),
+            (expression, search_limit),
         ).fetchall()
-        return [{"parent_asin": str(row[0])} for row in rows]
+
+        recommendations = [
+            {"parent_asin": str(row[0])}
+            for row in rows
+            if str(row[0]) not in seen_products
+        ]
+        return recommendations[:top_k]
 
     def respond(
         self,
@@ -139,7 +145,7 @@ class Agent:
         turn: int,
         top_k: int,
     ) -> dict:
-        """Update session state, retrieve products, and request a refinement."""
+        # Update the session, retrieve products, and choose a follow-up question.
         if session_id not in self._sessions:
             raise RuntimeError("reset must be called before respond")
 
@@ -149,7 +155,10 @@ class Agent:
         # Search the accumulated conversation so later answers refine rather
         # than replace the customer's original request.
         query = " ".join(session["messages"])
-        recommendations = self._search(query, top_k)
+        recommendations = self._search(query, top_k, session["seen_products"])
+        session["seen_products"].update(
+            recommendation["parent_asin"] for recommendation in recommendations
+        )
         ask_attribute = self._next_question(session)
 
         if ask_attribute:
