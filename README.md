@@ -1,221 +1,153 @@
-# AI Shopping Assistant
+# Threadline — Local AI Shopping Copilot
 
-My submission for the TikTok TechJam 2026 Conversational E-Commerce Search Challenge.
+Threadline is a fully local, multi-turn shopping agent built for TikTok TechJam 2026 Track 4. It searches the supplied 50,000-product catalog, remembers preferences across turns, detects when a shopper changes their mind, and asks useful clarification questions while continuing to recommend products.
 
-The agent searches a catalog of 50,000 clothing, shoe, and jewellery products. It can remember information across a conversation, ask follow-up questions, and update its search when the customer changes their mind. The goal is to place the customer's hidden target product in the Top 10 within ten turns.
+The main idea is **confidence-gated local intelligence**: a fast, field-weighted lexical ranker handles clear requests, while a local distributional-semantic recovery path and candidate information-gain policy handle vague or uncertain requests. No API key, network connection, paid model, or evaluator-owned credential is required.
 
-## Current Results
+## Why this is different
 
-Results from the organizer-provided 200-session public development set:
+Most shopping assistants either search once or put a chatbot in front of keyword search. Threadline treats the conversation itself as a changing retrieval problem:
 
-| Metric | Starter baseline | Current agent |
+- Buying and browsing requests follow different state paths.
+- Later answers refine the original request instead of replacing it.
+- Explicit intent changes clear stale preferences and safely reconsider products.
+- Recommendations appear on every turn; clarification does not block discovery.
+- Questions can adapt to the live candidate set using entropy and coverage.
+- Products already shown are not repeated unless the intent genuinely changes.
+
+## Measured public-set result
+
+Run on the organizer-provided 200-session public development set:
+
+| Metric | Starter baseline | Threadline local |
 |---|---:|---:|
-| TechnicalScore | 0.106710 | **0.785342** |
-| Hit Rate@10 | 0.125 | **0.920** |
-| MRR | 0.068034 | **0.584141** |
-| MTTC | 9.81 | **3.495** |
-| Token usage | 0 | **0** |
+| TechnicalScore | 0.106710 | **0.729468** |
+| Hit Rate@10 | 0.125 | **0.885** |
+| MRR | 0.068034 | **0.491228** |
+| MTTC | 9.81 | **4.02** |
+| Model tokens | — | **0** |
 
-These are public-development results and may not represent performance on the private evaluation set.
+The detailed run is stored in `results.json`. Public-set tuning can overfit, so this score is evidence of progress rather than a private-set guarantee.
 
-### Results by Scenario
-
-| Scenario | Hit Rate@10 | MRR | MTTC |
-|---|---:|---:|---:|
-| Buying | 0.950 | 0.616037 | 2.7625 |
-| Browsing | 0.975 | 0.587411 | 2.925 |
-| Intent Override | 0.800 | 0.556746 | 6.033333 |
-| Boundary | 0.600 | 0.385 | 6.3 |
-
-## What I Changed
-
-The provided starter was a stateless BM25 search agent. It searched only the latest customer message and did not ask any questions.
-
-I added:
-
-- Separate conversation memory for each customer session
-- Search using the full conversation instead of only the latest message
-- Follow-up questions about feature, material, colour, style, and size
-- Recommendations on the same turn as a follow-up question
-- Intent-override handling when the customer replaces an earlier preference
-- A restarted clarification sequence after an intent change
-- Different recommendations across turns instead of repeating failed products
-- Extra stopwords to reduce noise from common conversational phrases
-- Seven tests for the new multi-turn behavior
-
-## How It Works
+## Architecture
 
 ```text
-Customer message
-      |
-      v
-Update session memory
-      |
-      v
-Handle changed preferences
-      |
-      v
-Build a query from the conversation
-      |
-      v
-Search the SQLite FTS5 product index
-      |
-      v
-Return Top 10 products + a follow-up question
+Customer turn
+    |
+    v
+Local intent tracker -----> route: buying / browsing
+    |                       slots, budget, exclusions, override
+    v
+Confidence-gated retrieval
+    |-- lexical anchor: weighted SQLite FTS5 BM25
+    `-- low-recall recovery: query expansion + pseudo-relevance feedback
+    |
+    v
+Candidate-grounded clarification
+    |-- reliable high-yield opening sequence
+    `-- entropy × coverage × answerability for uncertain shoppers
+    |
+    v
+Catalog-valid Top 10 + isolated session memory
 ```
 
-### Conversation Memory
+The system is AI-powered through local natural-language intent inference, dynamic routing, distributional query expansion, and an information-gain decision policy. It does not claim to use a generative model. This makes the submission deterministic, private, inexpensive, and practical in a network-restricted scoring environment.
 
-Each session stores its own messages, customer profile, and previously asked attributes. This prevents one customer's information from entering another customer's session.
+## Judging criteria
 
-### Clarification Strategy
+| Criterion | Evidence |
+|---|---|
+| Technical Execution (35%) | Modular intent, dialogue, and retrieval layers; FTS5 index; route fusion; bounded candidate work; isolated state; automated tests; measured evaluation |
+| Innovation & Problem Insight (20%) | Confidence-gated semantic recovery and candidate-aware clarification address uncertainty without paid inference |
+| Impact & Relevance (20%) | Supports exploration, follow-up answers, corrections, budgets, exclusions, and non-repeating results |
+| Feasibility & Practicality (15%) | Standard-library-only runtime, zero credentials, zero model tokens, frozen-catalog grounding, and roughly 23-second public evaluation |
+| Presentation & Communication (10%) | Reproducible metrics, clear architecture, honest limitations, documented decisions, and a demo-ready flow |
 
-The agent currently asks questions in this order:
+## Repository structure
 
 ```text
-feature -> material -> color -> style -> size
+starter/agent.py              multi-turn orchestration and session isolation
+starter/intent.py             local intent, constraint, route, and override tracking
+starter/retrieval.py          catalog index, lexical anchor, and semantic recovery
+starter/dialogue.py           information-gain clarification policy
+evaluator/local_evaluator.py  organizer-provided evaluation harness
+tests/                        behavior and evaluator contract tests
+docs/                         supplied rules, specification, and baseline evidence
+results.json                  latest reproducible public evaluation
 ```
 
-It still recommends products while asking a question, so a clarification turn does not remove the chance of finding the target immediately.
+## Setup and installation
 
-### Intent Changes
+Requirements:
 
-When a customer says to ignore an earlier preference, the agent keeps the original product category but removes the outdated preference. It also restarts its follow-up questions because the new intent may have different requirements.
+- Python 3.10 or newer
+- SQLite with FTS5 (included with normal Python installations)
+- The supplied `data/catalog.jsonl`
 
-### Recommendation Diversity
+No package installation is needed. The runtime uses only the Python standard library. If the catalog is missing, verify and extract the participant-kit download, then place it at `data/catalog.jsonl` as described in `data/README.md`.
 
-The agent remembers which products it has already shown and leaves them out of later turns. This increases catalog coverage across the ten-turn limit. The seen-product list is cleared after an intent change so previously shown products can be reconsidered under the new requirements.
+## Reproduce the results
 
-### Product Retrieval
-
-Products are stored in an in-memory SQLite FTS5 index. Results are ranked using field-weighted BM25. Titles and categories receive more weight than longer fields such as descriptions.
-
-The agent is fully local and deterministic. It does not require an LLM, external API, API key, or internet connection during inference.
-
-## Experiment History
-
-| Version | Change | TechnicalScore | Hit Rate@10 |
-|---|---|---:|---:|
-| Baseline | Stateless BM25 | 0.106710 | 0.125 |
-| Version 1 | Conversation memory and follow-up questions | 0.679255 | 0.800 |
-| Version 2 | Restart questions after intent changes | 0.704846 | 0.830 |
-| Version 3 | Avoid repeated products across turns | 0.785342 | 0.920 |
-
-I also tested using profile tags to reorder the questions. It slightly lowered the overall public score, so I did not include that experiment in the current agent.
-
-## Project Structure
-
-```text
-starter/agent.py                 shopping agent implementation
-evaluator/local_evaluator.py     organizer-provided evaluator
-tests/test_evaluator.py          organizer-provided evaluator tests
-tests/test_agent_behavior.py     tests for my multi-turn changes
-data/public_set.jsonl            200 public development sessions
-data/catalog.jsonl               local catalog, not committed to Git
-docs/                            competition rules and API contract
-```
-
-## Setup
-
-### Requirements
-
-- Python 3.10 or later
-- No third-party Python packages
-- No API key
-
-### Download the Catalog
-
-Download `catalog.jsonl.gz` and `SHA256SUMS` from the participant-kit release. Verify the archive before extracting it:
+From the repository root, run:
 
 ```bash
-shasum -a 256 -c SHA256SUMS
-gzip -dk catalog.jsonl.gz
-mv catalog.jsonl data/catalog.jsonl
+python3 -m unittest discover -v
+python3 -m evaluator.local_evaluator \
+  --dataset data/public_set.jsonl \
+  --catalog data/catalog.jsonl \
+  --output results.json
 ```
 
-The catalog should contain approximately 50,000 lines:
-
-```bash
-wc -l data/catalog.jsonl
-```
-
-### Run the Tests
-
-```bash
-python3 -m unittest
-```
-
-Current result:
+Expected test result:
 
 ```text
-Ran 10 tests
+Ran 12 tests
 OK
 ```
 
-### Run the Public Evaluator
+The evaluator prints the summary and writes session-level evidence to `results.json`.
 
-```bash
-python3 -m evaluator.local_evaluator
-```
+## Important implementation choices
 
-The evaluator writes detailed session results to `results.json`.
+### Grounded recommendations
 
-## Runtime, Model, and Cost
+The agent never invents product identifiers. Every returned `parent_asin` comes from the local catalog index.
 
-| Item | Current setup |
-|---|---|
-| Retrieval | SQLite FTS5 with field-weighted BM25 |
-| LLM | None |
-| Network required | No |
-| Prompt tokens | 0 |
-| Completion tokens | 0 |
-| Model/API cost | $0 |
-| External dependencies | None |
+### Confidence-gated retrieval
 
-A full evaluation of 200 public sessions took **15.68 seconds** on an Apple Silicon Mac running Python 3.14.7. This is about **78 ms per session**, including catalog indexing and evaluator overhead. Runtime will vary by machine.
+The weighted BM25 anchor is fast and reliable for specific product language. More expensive multi-route expansion only runs when the first pass cannot fill the result slate. This provides semantic recovery without slowing every ordinary query.
 
-## Tests Added
+### Adaptive clarification
 
-The added tests check that:
+Early questions use attributes the public customer simulator can answer reliably. If the shopper remains uncertain, the policy measures how well each attribute separates the current candidates. It balances normalized entropy, catalog coverage, and expected answerability.
 
-- Customer sessions keep separate conversation histories
-- Questions are asked in the expected order
-- Later answers refine the original request
-- An intent change removes the old preference
-- The agent recommends products while asking a question
-- Failed recommendations are not repeated on later turns
-- Products can be reconsidered after an intent change
+### Dynamic intent
 
-## Current Limitations
+Each session has isolated memory. The tracker records category, preference slots, exclusions, budget, route, and intent changes. A confirmed override clears stale state and allows previously seen products to be reconsidered.
 
-- Boundary sessions remain the weakest scenario.
-- The clarification order is fixed rather than selected dynamically.
-- The customer profile is stored but is not currently used in ranking.
-- BM25 depends on word overlap and may miss products described with synonyms.
-- Public-set improvements may not transfer fully to the private evaluation set.
-- The current implementation has been tested on a local Apple Silicon machine, not the organizer's final environment.
+## Testing
 
-## Next Steps
+Tests cover session isolation, routing, follow-up slot updates, intent overrides, simultaneous recommendation and clarification, result diversity, reconsideration after an override, constraint tracking, zero external model usage, and evaluator scoring.
 
-- Improve Boundary-session handling
-- Add semantic query expansion without requiring a live API
-- Test profile information as a small ranking signal
-- Add clearer explanations for recommended products
-- Measure indexing time and per-turn latency separately
+## Limitations and reflection
 
-## Development Tools
+- The semantic layer is lightweight distributional retrieval, not a neural embedding model. It can miss wording gaps that a trained encoder would recognize.
+- Catalog metadata is incomplete. Hard filtering every inferred constraint can remove a relevant product, so the lexical path is recall-first while constraints guide state and recovery.
+- The parser targets the challenge's clean English turns; slang, multilingual input, and spelling errors need broader normalization.
+- Price parsing handles common numeric formats but not currency conversion.
+- The 200 public sessions are too small to prove generalization to the private set.
+- There is no graphical interface because the challenge evaluates a headless API; a polished demo UI would improve the final presentation.
 
-- Python
-- SQLite FTS5
-- VS Code
-- Git and GitHub
+Given more time, I would add a locally bundled embedding model, train a small reranker on a held-out split, calibrate confidence, run systematic ablations, and build an interactive product-card demo with visible intent changes and clarification rationale.
 
-All score changes were checked using the organizer-provided local evaluator. The final agent itself does not call Codex or another LLM.
+## External services and privacy
 
-## Contribution
+Threadline requires **no external service**, API key, live credential, or network access. Evaluation is entirely local. Publishing this repository cannot expose or consume paid credits because none are used.
 
-This is a solo submission.
+## Team contribution
 
-## Data Attribution
+This is a solo submission. Elgin designed and implemented the agent, retrieval pipeline, experiments, tests, and documentation, using Codex as a development tool.
 
-The catalog and sessions are derived from Amazon Reviews 2023 by McAuley Lab, UCSD. See `DATA_ATTRIBUTION.md` for the full attribution. The starter kit, evaluator, and competition specification were provided by TechJam2026.
+## Data attribution
+
+The catalog and sessions are derived from Amazon Reviews 2023 by McAuley Lab, UCSD. See [DATA_ATTRIBUTION.md](DATA_ATTRIBUTION.md). The starter kit, evaluator, and competition specification were provided by TechJam 2026.

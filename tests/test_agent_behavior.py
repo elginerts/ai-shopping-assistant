@@ -9,11 +9,9 @@ from starter.agent import Agent
 
 
 class AgentBehaviorTest(unittest.TestCase):
-    # Use a small fake catalog so the tests run quickly.
-    # The real catalog has 50,000 products and is not needed for these tests.
-
     def setUp(self) -> None:
-        # Create two products with clearly different attributes.
+        # The fake catalog is small, but it still goes through the real SQLite
+        # index, reranker, constraints, and clarification policy.
         self.temp_directory = tempfile.TemporaryDirectory()
         catalog_path = Path(self.temp_directory.name) / "catalog.jsonl"
         products = [
@@ -21,19 +19,31 @@ class AgentBehaviorTest(unittest.TestCase):
                 "parent_asin": "SHOE_RED",
                 "title": "Red running shoe",
                 "categories": ["Clothing", "Shoes"],
-                "features": ["lightweight", "cotton"],
-                "details": {"color": "red"},
-                "store": "Example Store",
-                "description": ["shoe for daily running"],
+                "features": ["lightweight", "breathable"],
+                "details": {"color": "red", "size": "9"},
+                "price": 55,
+                "store": "Example Sports",
+                "description": ["shoe for daily road running"],
             },
             {
                 "parent_asin": "BOOT_BLUE",
                 "title": "Blue winter boot",
                 "categories": ["Clothing", "Boots"],
-                "features": ["warm", "leather"],
-                "details": {"color": "blue"},
-                "store": "Example Store",
-                "description": ["boot for cold weather"],
+                "features": ["warm", "water resistant"],
+                "details": {"color": "blue", "material": "leather"},
+                "price": 140,
+                "store": "Example Outdoor",
+                "description": ["leather boot for cold weather hiking"],
+            },
+            {
+                "parent_asin": "SHOE_BLACK",
+                "title": "Black trail shoe",
+                "categories": ["Clothing", "Shoes"],
+                "features": ["grippy", "water resistant"],
+                "details": {"color": "black", "size": "10"},
+                "price": 80,
+                "store": "Example Outdoor",
+                "description": ["shoe for trail running and hiking"],
             },
         ]
         catalog_path.write_text(
@@ -43,87 +53,80 @@ class AgentBehaviorTest(unittest.TestCase):
         self.agent = Agent(catalog_path)
 
     def tearDown(self) -> None:
-        # Close the database and remove the temporary catalog after each test.
         self.agent.connection.close()
         self.temp_directory.cleanup()
 
-    def test_sessions_keep_separate_conversation_history(self) -> None:
-        # Messages from one customer should not appear in another session.
+    def test_sessions_keep_separate_state(self) -> None:
         self.agent.reset("customer_one", {})
         self.agent.reset("customer_two", {})
 
         self.agent.respond("customer_one", "I need running shoes.", 1, 10)
 
-        self.assertEqual(self.agent._sessions["customer_two"]["messages"], [])
-        self.assertIn("running shoes", self.agent._sessions["customer_one"]["messages"][0])
+        self.assertEqual(self.agent._sessions["customer_two"]["intent"].category, "")
+        self.assertEqual(self.agent._sessions["customer_one"]["intent"].category, "running shoes")
 
-    def test_question_order_starts_with_high_information_attributes(self) -> None:
-        # Check that the agent asks broader questions before narrower ones.
+    def test_router_separates_buying_and_browsing_requests(self) -> None:
+        self.agent.reset("buyer", {})
+        self.agent.reset("browser", {})
+
+        self.agent.respond(
+            "buyer",
+            "I'm looking for shoes. A key requirement is: waterproof.",
+            1,
+            10,
+        )
+        self.agent.respond("browser", "I'm looking for shoes, but I'm still exploring.", 1, 10)
+
+        self.assertEqual(self.agent._sessions["buyer"]["intent"].route, "buying")
+        self.assertEqual(self.agent._sessions["browser"]["intent"].route, "browsing")
+
+    def test_later_answer_updates_the_requested_slot(self) -> None:
         self.agent.reset("customer", {})
+        first = self.agent.respond("customer", "I am looking for shoes.", 1, 10)
 
-        questions = [
-            self.agent.respond("customer", "I am still deciding.", turn, 10)["ask_attribute"]
-            for turn in range(1, 6)
-        ]
+        self.agent.respond(
+            "customer",
+            "For that, what matters is: lightweight.",
+            2,
+            10,
+        )
 
-        self.assertEqual(questions, ["feature", "material", "color", "style", "size"])
+        intent = self.agent._sessions["customer"]["intent"]
+        self.assertIn("lightweight", intent.slots[first["ask_attribute"]])
 
-    def test_later_answers_refine_the_original_request(self) -> None:
-        # The second answer should be combined with the original product type.
+    def test_intent_override_erases_old_preference(self) -> None:
         self.agent.reset("customer", {})
-
-        self.agent.respond("customer", "I am looking for shoes.", 1, 10)
-        self.agent.respond("customer", "Cotton matters to me.", 2, 10)
-
-        memory = " ".join(self.agent._sessions["customer"]["messages"]).lower()
-        self.assertIn("shoes", memory)
-        self.assertIn("cotton", memory)
-
-    def test_intent_override_removes_the_old_preference(self) -> None:
-        # When the customer changes their mind, the old colour should be removed.
-        self.agent.reset("customer", {})
-
         self.agent.respond("customer", "I'm looking for shoes. I prefer blue.", 1, 10)
-        response = self.agent.respond(
+
+        self.agent.respond(
             "customer",
             "Actually, ignore my earlier preference. What I need is: red.",
             2,
             10,
         )
 
-
-        memory = " ".join(self.agent._sessions["customer"]["messages"]).lower()
-        self.assertIn("shoes", memory)
-        self.assertIn("red", memory)
-        self.assertNotIn("blue", memory)
-
-        # The agent should restart its questions after the customer's needs change.
-        self.assertEqual(response["ask_attribute"], "feature")
+        intent = self.agent._sessions["customer"]["intent"]
+        self.assertEqual(intent.category, "shoes")
+        self.assertIn("red", intent.slots["color"])
+        self.assertNotIn("blue", intent.values())
 
     def test_agent_recommends_while_asking_a_question(self) -> None:
-        # A follow-up question should not stop the agent from recommending products.
         self.agent.reset("customer", {})
 
         response = self.agent.respond("customer", "I need a red running shoe.", 1, 10)
 
-        self.assertEqual(response["ask_attribute"], "feature")
+        self.assertIsNotNone(response["ask_attribute"])
         self.assertGreater(len(response["recommendations"]), 0)
 
-    def test_agent_does_not_repeat_failed_products(self) -> None:
-        # Later turns should try different products instead of returning the
-        # same unsuccessful result again.
+    def test_agent_does_not_repeat_products_between_turns(self) -> None:
         self.agent.reset("customer", {})
 
-        first = self.agent.respond("customer", "I need clothing.", 1, 1)
-        second = self.agent.respond("customer", "It should be warm.", 2, 1)
+        first = self.agent.respond("customer", "I need shoes.", 1, 1)
+        second = self.agent.respond("customer", "I don't have an additional preference.", 2, 1)
 
-        first_id = first["recommendations"][0]["parent_asin"]
-        second_id = second["recommendations"][0]["parent_asin"]
-        self.assertNotEqual(first_id, second_id)
+        self.assertNotEqual(first["recommendations"], second["recommendations"])
 
-    def test_intent_override_can_show_a_product_again(self) -> None:
-        # A product can be reconsidered after an intent change because it is
-        # now being ranked against a different set of requirements.
+    def test_intent_change_can_reconsider_a_seen_product(self) -> None:
         self.agent.reset("customer", {})
 
         first = self.agent.respond("customer", "I need a red running shoe.", 1, 1)
@@ -135,6 +138,28 @@ class AgentBehaviorTest(unittest.TestCase):
         )
 
         self.assertEqual(first["recommendations"], second["recommendations"])
+
+    def test_constraints_are_tracked_without_destroying_lexical_recall(self) -> None:
+        self.agent.reset("customer", {})
+
+        response = self.agent.respond(
+            "customer",
+            "I'm looking for footwear. A key requirement is: under $100 without leather.",
+            1,
+            10,
+        )
+        intent = self.agent._sessions["customer"]["intent"]
+
+        self.assertEqual(100.0, intent.budget_max)
+        self.assertIn("leather", " ".join(intent.exclusions))
+        self.assertTrue(response["recommendations"])
+
+    def test_local_agent_reports_zero_model_tokens(self) -> None:
+        self.agent.reset("customer", {})
+
+        response = self.agent.respond("customer", "I need shoes.", 1, 10)
+
+        self.assertEqual(response["usage"], {"prompt_tokens": 0, "completion_tokens": 0})
 
 
 if __name__ == "__main__":
