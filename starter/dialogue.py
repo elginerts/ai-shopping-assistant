@@ -39,12 +39,9 @@ class ClarificationPolicy:
         # preferences. If they are unsure, switch to candidate information gain.
         # Keep a stable opening sequence for reproducibility. Candidate entropy
         # takes over after those questions when the shopper stays uncertain.
-        if len(asked_attributes) < 5:
+        if not adaptive and len(asked_attributes) < 5:
             for high_yield_attribute in ("feature", "material", "color", "style", "size"):
-                if (
-                    high_yield_attribute not in asked_attributes
-                    and not intent.has_slot(high_yield_attribute)
-                ):
+                if high_yield_attribute not in asked_attributes:
                     return high_yield_attribute, QUESTION_TEXT[high_yield_attribute]
 
         for high_yield_attribute in ("feature", "material"):

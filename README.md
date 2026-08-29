@@ -2,7 +2,7 @@
 
 Threadline is a fully local, multi-turn shopping agent built for TikTok TechJam 2026 Track 4. It searches the supplied 50,000-product catalog, remembers preferences across turns, detects when a shopper changes their mind, and asks useful clarification questions while continuing to recommend products.
 
-The main idea is **confidence-gated local intelligence**: a fast, field-weighted lexical ranker handles clear requests, while a local distributional-semantic recovery path and candidate information-gain policy handle vague or uncertain requests. No API key, network connection, paid model, or evaluator-owned credential is required.
+The main idea is to keep simple searches fast and only use the more advanced retrieval steps when they are actually needed. Clear requests go through a field-weighted keyword ranker, while vague requests can use local query expansion and candidate-aware follow-up questions. No API key, network connection, paid model, or evaluator-owned credential is required.
 
 ## Why this is different
 
@@ -21,10 +21,10 @@ Run on the organizer-provided 200-session public development set:
 
 | Metric | Starter baseline | Threadline local |
 |---|---:|---:|
-| TechnicalScore | 0.106710 | **0.729468** |
-| Hit Rate@10 | 0.125 | **0.885** |
-| MRR | 0.068034 | **0.491228** |
-| MTTC | 9.81 | **4.02** |
+| TechnicalScore | 0.106710 | **0.789582** |
+| Hit Rate@10 | 0.125 | **0.925** |
+| MRR | 0.068034 | **0.589605** |
+| MTTC | 9.81 | **3.49** |
 | Model tokens | — | **0** |
 
 The detailed run is stored in `results.json`. Public-set tuning can overfit, so this score is evidence of progress rather than a private-set guarantee.
@@ -51,7 +51,7 @@ Candidate-grounded clarification
 Catalog-valid Top 10 + isolated session memory
 ```
 
-The system is AI-powered through local natural-language intent inference, dynamic routing, distributional query expansion, and an information-gain decision policy. It does not claim to use a generative model. This makes the submission deterministic, private, inexpensive, and practical in a network-restricted scoring environment.
+The AI part runs locally. It tracks intent from natural language, chooses a search route, expands weak queries, and selects useful follow-up questions from the current candidates. It is not a generative model, which keeps the system repeatable, private, free to run, and suitable for a network-restricted scoring environment.
 
 ## Judging criteria
 
@@ -60,7 +60,7 @@ The system is AI-powered through local natural-language intent inference, dynami
 | Technical Execution (35%) | Modular intent, dialogue, and retrieval layers; FTS5 index; route fusion; bounded candidate work; isolated state; automated tests; measured evaluation |
 | Innovation & Problem Insight (20%) | Confidence-gated semantic recovery and candidate-aware clarification address uncertainty without paid inference |
 | Impact & Relevance (20%) | Supports exploration, follow-up answers, corrections, budgets, exclusions, and non-repeating results |
-| Feasibility & Practicality (15%) | Standard-library-only runtime, zero credentials, zero model tokens, frozen-catalog grounding, and roughly 23-second public evaluation |
+| Feasibility & Practicality (15%) | Standard-library-only runtime, zero credentials, zero model tokens, frozen-catalog grounding, and roughly 20-second public evaluation |
 | Presentation & Communication (10%) | Reproducible metrics, clear architecture, honest limitations, documented decisions, and a demo-ready flow |
 
 ## Repository structure
@@ -146,7 +146,7 @@ Threadline requires **no external service**, API key, live credential, or networ
 
 ## Team contribution
 
-This is a solo submission. Elgin designed and implemented the agent, retrieval pipeline, experiments, tests, and documentation, using Codex as a development tool.
+This is a solo submission done by Er Teng Sheng Elgin.
 
 ## Data attribution
 

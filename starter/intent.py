@@ -25,8 +25,6 @@ USE_CASE_WORDS = {
 
 OVERRIDE_MARKERS = (
     "ignore my earlier preference",
-    "instead",
-    "rather than",
     "forget what i said",
     "change my earlier preference",
 )
@@ -95,7 +93,7 @@ class IntentTracker:
     ) -> ShoppingIntent:
         lowered = user_message.lower()
         changed = any(marker in lowered for marker in OVERRIDE_MARKERS)
-        if lowered.startswith("actually,") and ("what i need is" in lowered or asked_attribute is None):
+        if lowered.startswith("actually,") and "what i need is" in lowered:
             changed = True
 
         if changed:
