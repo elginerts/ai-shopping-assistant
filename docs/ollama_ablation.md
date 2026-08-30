@@ -9,19 +9,21 @@ All experiments used the organizer-provided 200-session public set and `nomic-em
 | Ollama, balanced fusion | 0.18 | 16 | No | 0.791543 | 0.925 | 0.595810 | 3.485 |
 | Ollama, strong fusion | 0.35 | 16 | No | 0.789191 | 0.925 | 0.586637 | 3.465 |
 | Ollama, smaller window | 0.18 | 12 | No | 0.790197 | 0.925 | 0.590990 | 3.480 |
-| **Final: correction-aware hybrid** | **0.18** | **16** | **Yes** | **0.792766** | **0.925** | **0.600220** | **3.490** |
+| Lexical-only after correction | 0.18 | 16 | Lexical | 0.792766 | 0.925 | 0.600220 | 3.490 |
+| **Final: clean-ledger semantic query** | **0.18** | **16** | **Clean query** | **0.793614** | **0.925** | **0.602381** | **3.480** |
+| Wider semantic window (rejected) | 0.18 | 30 | Clean query | 0.792106 | 0.925 | 0.596688 | 3.470 |
 
 ## What I learned
 
 More model influence was not automatically better. A weight of 0.35 moved relevant exact matches down and reduced MRR. A 12-product window was cheaper but lost some ranking gain.
 
-The largest useful observation was scenario-specific: semantic reranking improved Boundary, Browsing, and Buying MRR, but weakened Intent Override. Disabling semantic reranking after a correction kept the benefits without accepting that regression.
+The largest useful observation was scenario-specific: embedding the raw conversation weakened Intent Override because old and negated preferences remained semantically close. Compiling a query from active ledger revisions performed better than disabling semantic ranking after corrections. Increasing the window to 30 cost more model work and reduced MRR, so the bounded 16-candidate design remains the default.
 
 ## Question-planner ablation
 
 | Policy | TechnicalScore | Hit@10 | MRR | MTTC | Boundary Hit@10 |
 |---|---:|---:|---:|---:|---:|
-| Guarded counterfactual trace | **0.792766** | **0.925** | **0.600220** | **3.490** | 0.60 |
+| Guarded counterfactual trace + clean intent | **0.793614** | **0.925** | **0.602381** | **3.480** | 0.60 |
 | Unrestricted counterfactual selection | 0.729011 | 0.885 | 0.494702 | 4.095 | **0.70** |
 
 The unrestricted planner found one more Boundary target, but it asked less answerable questions in the much larger Buying and Browsing groups. The default therefore keeps the counterfactual calculation visible while using the validated question sequence as a deployment guardrail.

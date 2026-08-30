@@ -8,7 +8,7 @@ This document explains why Threadline uses several small components instead of s
 2. SQLite FTS5 retrieves a recall-focused candidate list from the frozen catalogue.
 3. During normal discovery, `nomic-embed-text` compares the request with the top 16 products.
 4. Reciprocal-rank fusion combines the lexical and semantic positions.
-5. After an explicit correction, semantic reranking is disabled for that session and the cleaned lexical conversation is used.
+5. After a correction, a fresh query is compiled from active ledger revisions before semantic reranking.
 6. `ClarificationPolicy` simulates the possible answers for every available attribute.
 7. A validated guardrail combines expected question value with answerability evidence.
 8. The agent filters already-seen IDs and returns catalogue-grounded recommendations plus an optional decision trace.
@@ -54,15 +54,15 @@ Embedding every product on every turn would be slow and unnecessary. BM25 narrow
 
 This also limits risk. The model cannot create a product ID because it only reorders IDs that already came from the catalogue index.
 
-## Correction-aware semantic gate
+## Correction-aware semantic compilation
 
 Dense embeddings place similar meanings close together, but that can be a weakness when a sentence changes direction. “I want blue shoes” and “I do not want blue shoes anymore” still share many concepts. An explicit correction therefore triggers three actions:
 
 - Old intent slots are cleared.
 - Previously shown products may be considered again.
-- Semantic reranking is turned off for the rest of that session.
+- A new semantic query is compiled from active slots, excluding retired revisions.
 
-The public ablation supported this choice. Always-on semantic reranking reduced Intent Override MRR from 0.565079 to 0.535675. The gate recovered the lost ranking quality while keeping the gains in other scenarios.
+The public ablation supported this choice. Compiling clean intent before reranking reached 0.602381 overall MRR, compared with 0.600220 when corrections stayed lexical-only. This keeps semantic matching without allowing old preferences back into the query.
 
 ## Embedding cache
 

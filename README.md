@@ -21,7 +21,7 @@ Recommendations are returned on every turn. The shopper does not have to finish 
 
 The main idea is a **correction-aware search and decision engine**.
 
-Ollama embeddings are useful when two phrases mean the same thing but use different words. However, embedding models can be less reliable around negation, such as “not blue anymore.” Threadline therefore uses semantic reranking during normal discovery and switches to the cleaned lexical state after an explicit correction. This avoids carrying the meaning of an old preference into the new search.
+Ollama embeddings are useful when two phrases mean the same thing but use different words. However, embedding raw corrections can preserve stale meaning, such as “blue” inside “not blue anymore.” Threadline solves this by compiling a fresh semantic query from only the active intent-ledger revisions. Retired preferences never reach the reranker again.
 
 Threadline also keeps a versioned intent ledger. Preferences are not stored as one block of chat text: every addition, replacement, and removal has a status and source turn. Before asking a follow-up question, the agent simulates the possible candidate groups for each attribute and estimates the expected candidate reduction and Top-10 confidence gain. The trace makes that decision visible instead of treating the model as a black box.
 
@@ -43,10 +43,10 @@ The latest result uses the organizer-provided 200-session public development set
 
 | Metric | Starter baseline | Before Ollama | Threadline + Ollama |
 |---|---:|---:|---:|
-| TechnicalScore | 0.106710 | 0.789582 | **0.792766** |
+| TechnicalScore | 0.106710 | 0.789582 | **0.793614** |
 | Hit Rate@10 | 0.125 | 0.925 | **0.925** |
-| MRR | 0.068034 | 0.589605 | **0.600220** |
-| MTTC | 9.81 | 3.49 | **3.49** |
+| MRR | 0.068034 | 0.589605 | **0.602381** |
+| MTTC | 9.81 | 3.49 | **3.48** |
 | Reported generative tokens | — | 0 | **0** |
 
 Scenario results:
@@ -56,7 +56,7 @@ Scenario results:
 | Boundary | 0.6000 | 0.533333 | 6.50 |
 | Browsing | 0.9875 | 0.596637 | 2.8875 |
 | Buying | 0.9500 | 0.625342 | 2.75 |
-| Intent Override | 0.8000 | 0.565079 | 6.0667 |
+| Intent Override | 0.8000 | 0.579484 | 6.00 |
 
 The first full run on the development Mac took about 4 minutes 22 seconds while building a 21 MB embedding cache. The final warm-cache verification took about 40 seconds. Hardware will affect these timings.
 
@@ -77,8 +77,8 @@ Field-weighted BM25 candidate search
        +------------------------------+
        | normal request               | corrected request
        v                              v
-Ollama semantic reranker         Clean lexical ranking
-nomic-embed-text                 correction safety gate
+Ollama semantic reranker         Active-ledger query compiler
+nomic-embed-text                 then Nomic semantic reranking
        |                              |
        +---------------+--------------+
                        v
@@ -98,7 +98,7 @@ More detail is available in [docs/architecture.md](docs/architecture.md).
 | Criterion | Evidence in this repository |
 |---|---|
 | Technical Execution (35%) | Separate intent, retrieval, model-client, dialogue, and cache components; bounded neural reranking; clear startup errors; 19 automated tests; measured evaluation |
-| Innovation & Problem Insight (20%) | A versioned intent ledger and counterfactual question simulation address stale preferences and unnecessary questions; correction-aware semantic gating handles embedding weakness around negation |
+| Innovation & Problem Insight (20%) | A versioned intent ledger and counterfactual question simulation address stale preferences and unnecessary questions; correction-aware query compilation prevents semantic prompt inertia |
 | Impact & Relevance (20%) | Handles browsing, specific buying, follow-up answers, uncertainty, non-repeating results, and changed requirements |
 | Feasibility & Practicality (15%) | Local Apache-2.0 model, no paid calls, reusable embedding cache, small candidate window, and catalogue-grounded output |
 | Presentation & Communication (10%) | Reproducible commands, architecture notes, ablation evidence, honest limitations, and readable project structure |
@@ -194,6 +194,7 @@ The measured defaults should normally be kept unchanged.
 |---|---:|---|
 | `THREADLINE_SEMANTIC_WEIGHT` | `0.18` | Influence of semantic rank during reciprocal-rank fusion |
 | `THREADLINE_RERANK_LIMIT` | `16` | Number of BM25 candidates sent to the model |
+| `THREADLINE_CORRECTION_SEMANTIC` | `clean` | `clean` reranks a query compiled from active ledger slots; `lexical` is the ablation mode |
 | `THREADLINE_CACHE_DIR` | `.threadline_cache` | Location of the reusable product embedding cache |
 | `THREADLINE_QUESTION_POLICY` | `guarded` | `guarded` keeps the verified policy; `counterfactual` enables the experimental unrestricted planner |
 
@@ -208,7 +209,7 @@ The 19 tests cover:
 - Selective slot replacement and attribute removal
 - Versioned ledger state and public decision traces
 - Counterfactual question-value metrics
-- The correction-aware semantic safety gate
+- Clean-intent semantic reranking after corrections
 - Recommendations returned while asking a question
 - Budget and exclusion tracking
 - Required-model error messages

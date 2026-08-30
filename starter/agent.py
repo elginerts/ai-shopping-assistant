@@ -40,6 +40,13 @@ class Agent:
         self.clarification_policy = ClarificationPolicy(
             mode=os.getenv("THREADLINE_QUESTION_POLICY", "guarded")
         )
+        self.correction_semantic_mode = os.getenv(
+            "THREADLINE_CORRECTION_SEMANTIC", "clean"
+        )
+        if self.correction_semantic_mode not in {"lexical", "clean"}:
+            raise ValueError(
+                "THREADLINE_CORRECTION_SEMANTIC must be 'lexical' or 'clean'"
+            )
         self._sessions: dict[str, dict] = {}
 
     def reset(self, session_id: str, user_profile: dict) -> None:
@@ -87,10 +94,14 @@ class Agent:
             # A new intent deserves a clean recommendation and question slate.
             session["seen_products"].clear()
             session["asked_attributes"].clear()
-            # Dense embeddings are good at meaning, but less reliable with
-            # negation. After a correction, the cleaned lexical state is safer.
-            session["use_semantic_reranker"] = False
-            if "ignore my earlier preference" in lowered_message:
+            # Do not embed the raw correction beside the old request. Rebuild
+            # the query from active ledger slots so retired values stay out.
+            session["use_semantic_reranker"] = (
+                self.correction_semantic_mode == "clean"
+            )
+            if self.correction_semantic_mode == "clean":
+                session["messages"] = [intent.query_text()]
+            elif "ignore my earlier preference" in lowered_message:
                 category_request = session["messages"][0].split(".", maxsplit=1)[0]
                 session["messages"] = [category_request, user_message]
             else:
@@ -102,7 +113,9 @@ class Agent:
             session["messages"] = [intent.query_text()]
             session["seen_products"].clear()
             session["asked_attributes"].clear()
-            session["use_semantic_reranker"] = False
+            session["use_semantic_reranker"] = (
+                self.correction_semantic_mode == "clean"
+            )
 
         recommendations, candidate_ids = self.index.search(
             intent=intent,

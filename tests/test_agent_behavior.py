@@ -237,7 +237,7 @@ class AgentBehaviorTest(unittest.TestCase):
 
         self.assertEqual(response["usage"], {"prompt_tokens": 0, "completion_tokens": 0})
 
-    def test_semantic_reranking_stops_after_an_intent_correction(self) -> None:
+    def test_semantic_reranking_uses_clean_state_after_a_correction(self) -> None:
         self.agent.reset("customer", {})
         self.agent.respond("customer", "I need blue shoes.", 1, 10)
         calls_before_override = self.agent.embedder.calls
@@ -249,7 +249,16 @@ class AgentBehaviorTest(unittest.TestCase):
             10,
         )
 
-        self.assertEqual(calls_before_override, self.agent.embedder.calls)
+        self.assertGreater(self.agent.embedder.calls, calls_before_override)
+        self.assertEqual(
+            "bm25_plus_nomic",
+            self.agent.respond(
+                "customer",
+                "I don't have an additional preference.",
+                3,
+                10,
+            )["decision_trace"]["retrieval"]["strategy"],
+        )
 
 
 if __name__ == "__main__":

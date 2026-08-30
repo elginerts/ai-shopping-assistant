@@ -48,7 +48,7 @@ Two modes are available:
 - `guarded`: measured high-yield questions first, followed by validated information gain; counterfactual values are calculated and reported.
 - `counterfactual`: the experimental utility directly selects every question.
 
-The unrestricted mode raised Boundary Hit@10 from 0.60 to 0.70, but reduced overall Hit@10 from 0.925 to 0.885. It is kept for reproducibility rather than presented as an improvement. The guarded mode retains the verified 0.792766 TechnicalScore.
+The unrestricted mode raised Boundary Hit@10 from 0.60 to 0.70, but reduced overall Hit@10 from 0.925 to 0.885. It is kept for reproducibility rather than presented as an improvement. The guarded mode retains the verified 0.793614 TechnicalScore.
 
 ## Example trace
 
@@ -63,7 +63,7 @@ The unrestricted mode raised Boundary Hit@10 from 0.60 to 0.70, but reduced over
     ]
   },
   "retrieval": {
-    "strategy": "lexical_after_correction",
+    "strategy": "bm25_plus_nomic",
     "candidate_count": 100,
     "returned_count": 10
   },
