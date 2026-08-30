@@ -59,6 +59,20 @@ def classify_attribute(value: str) -> str:
 
 
 @dataclass
+class SlotRevision:
+    """One auditable change to a shopper preference."""
+
+    revision_id: int
+    attribute: str
+    value: str
+    status: str
+    turn: int
+    source: str
+    replaced_by: int | None = None
+    ended_turn: int | None = None
+
+
+@dataclass
 class ShoppingIntent:
     category: str = ""
     slots: dict[str, list[str]] = field(default_factory=dict)
@@ -67,12 +81,88 @@ class ShoppingIntent:
     budget_max: float | None = None
     route: str = "browsing"
     changed: bool = False
+    selective_revision: bool = False
+    ledger: list[SlotRevision] = field(default_factory=list)
 
     def values(self) -> list[str]:
         return [value for values in self.slots.values() for value in values]
 
     def query_text(self) -> str:
         return " ".join([self.category, *self.values()]).strip()
+
+    def active_state(self) -> dict[str, list[str]]:
+        state: dict[str, list[str]] = {}
+        if self.category:
+            state["category"] = [self.category]
+        state.update({key: list(values) for key, values in self.slots.items() if values})
+        if self.exclusions:
+            state["exclusion"] = list(self.exclusions)
+        if self.budget_min is not None:
+            state["budget_min"] = [str(round(self.budget_min, 2))]
+        if self.budget_max is not None:
+            state["budget_max"] = [str(round(self.budget_max, 2))]
+        return state
+
+    def record(
+        self,
+        attribute: str,
+        value: str,
+        turn: int,
+        source: str,
+        replace_attribute: bool = False,
+    ) -> None:
+        clean_value = _clean(value)
+        if not clean_value:
+            return
+        active = [
+            item for item in self.ledger
+            if item.attribute == attribute and item.status == "active"
+        ]
+        if any(item.value.lower() == clean_value.lower() for item in active):
+            return
+
+        next_id = len(self.ledger) + 1
+        if replace_attribute:
+            for item in active:
+                item.status = "replaced"
+                item.replaced_by = next_id
+                item.ended_turn = turn
+        self.ledger.append(SlotRevision(
+            revision_id=next_id,
+            attribute=attribute,
+            value=clean_value,
+            status="active",
+            turn=turn,
+            source=source[:240],
+        ))
+
+    def retire_preferences(self, turn: int) -> None:
+        for item in self.ledger:
+            if item.status == "active" and item.attribute != "category":
+                item.status = "replaced"
+                item.ended_turn = turn
+        self.slots.clear()
+        self.exclusions.clear()
+        self.budget_min = None
+        self.budget_max = None
+
+    def remove_attribute(self, attribute: str, turn: int, source: str) -> None:
+        for item in self.ledger:
+            if item.attribute == attribute and item.status == "active":
+                item.status = "removed"
+                item.ended_turn = turn
+        self.slots.pop(attribute, None)
+        if attribute == "budget":
+            self.budget_min = None
+            self.budget_max = None
+        self.ledger.append(SlotRevision(
+            revision_id=len(self.ledger) + 1,
+            attribute=attribute,
+            value="no preference",
+            status="removed",
+            turn=turn,
+            source=source[:240],
+        ))
 
     def has_slot(self, attribute: str) -> bool:
         if attribute == "category":
@@ -90,26 +180,42 @@ class IntentTracker:
         intent: ShoppingIntent,
         user_message: str,
         asked_attribute: str | None,
+        turn: int = 0,
     ) -> ShoppingIntent:
         lowered = user_message.lower()
         changed = any(marker in lowered for marker in OVERRIDE_MARKERS)
         if lowered.startswith("actually,") and "what i need is" in lowered:
             changed = True
+        category = self._extract_category(user_message)
+        category_changed = bool(
+            category and intent.category and category.lower() != intent.category.lower()
+        )
+        changed = changed or category_changed
 
         if changed:
             # The category normally survives an override, while old slots no
             # longer represent what the shopper wants.
-            intent.slots.clear()
-            intent.exclusions.clear()
-            intent.budget_min = None
-            intent.budget_max = None
+            intent.retire_preferences(turn)
 
-        category = self._extract_category(user_message)
+        removed_attribute = self._extract_removed_attribute(user_message)
+        if removed_attribute:
+            intent.remove_attribute(removed_attribute, turn, user_message)
+
+        replacement = self._extract_selective_replacement(user_message)
+        if replacement and not changed:
+            new_value, _old_value = replacement
+            attribute = classify_attribute(new_value)
+            intent.slots[attribute] = [new_value]
+            intent.record(attribute, new_value, turn, user_message, replace_attribute=True)
+
         if category:
-            if intent.category and category.lower() != intent.category.lower():
-                changed = True
+            if category_changed:
+                intent.record("category", category, turn, user_message, replace_attribute=True)
+            elif not intent.category:
+                intent.record("category", category, turn, user_message)
             intent.category = category
 
+        old_budget = (intent.budget_min, intent.budget_max)
         values = self._extract_values(user_message)
         for value in values:
             if self._is_empty_preference(value):
@@ -121,13 +227,44 @@ class IntentTracker:
             if attribute == "budget":
                 self._update_budget(intent, value)
             else:
-                intent.slots[attribute] = _unique([*intent.slots.get(attribute, []), value])[-4:]
+                if not replacement or value.lower() != replacement[0].lower():
+                    intent.slots[attribute] = _unique([*intent.slots.get(attribute, []), value])[-4:]
+                    intent.record(attribute, value, turn, user_message)
 
-        intent.exclusions = _unique([*intent.exclusions, *self._extract_exclusions(user_message)])[-8:]
+        new_exclusions = self._extract_exclusions(user_message)
+        intent.exclusions = _unique([*intent.exclusions, *new_exclusions])[-8:]
+        for exclusion in new_exclusions:
+            intent.record("exclusion", exclusion, turn, user_message)
         self._update_budget(intent, user_message)
+        if old_budget != (intent.budget_min, intent.budget_max):
+            intent.record("budget", user_message, turn, user_message, replace_attribute=True)
         intent.changed = changed
+        intent.selective_revision = bool((removed_attribute or replacement) and not changed)
         intent.route = self._choose_route(intent, user_message)
         return intent
+
+    @staticmethod
+    def _extract_selective_replacement(message: str) -> tuple[str, str] | None:
+        match = re.search(
+            r"(?:make it |show me )?([a-z0-9$ -]{1,50}?)\s+instead of\s+([a-z0-9$ -]{1,50})(?:[.,;]|$)",
+            message,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+        return _clean(match.group(1)), _clean(match.group(2))
+
+    @staticmethod
+    def _extract_removed_attribute(message: str) -> str | None:
+        lowered = message.lower()
+        match = re.search(
+            r"\b(material|colou?r|size|style|brand|budget|feature|use case)\s+"
+            r"(?:no longer matters|doesn't matter|does not matter)",
+            lowered,
+        )
+        if not match:
+            return None
+        return match.group(1).replace("colour", "color").replace("use case", "use_case")
 
     @staticmethod
     def _extract_category(message: str) -> str:

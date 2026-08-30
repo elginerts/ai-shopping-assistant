@@ -19,9 +19,11 @@ Recommendations are returned on every turn. The shopper does not have to finish 
 
 ## What makes Threadline different
 
-The main idea is a **correction-aware hybrid search**.
+The main idea is a **correction-aware search and decision engine**.
 
 Ollama embeddings are useful when two phrases mean the same thing but use different words. However, embedding models can be less reliable around negation, such as “not blue anymore.” Threadline therefore uses semantic reranking during normal discovery and switches to the cleaned lexical state after an explicit correction. This avoids carrying the meaning of an old preference into the new search.
+
+Threadline also keeps a versioned intent ledger. Preferences are not stored as one block of chat text: every addition, replacement, and removal has a status and source turn. Before asking a follow-up question, the agent simulates the possible candidate groups for each attribute and estimates the expected candidate reduction and Top-10 confidence gain. The trace makes that decision visible instead of treating the model as a black box.
 
 Other design choices include:
 
@@ -29,7 +31,9 @@ Other design choices include:
 - Neural reranking over only the top 16 candidates instead of all 50,000 products
 - Reciprocal-rank fusion so BM25 and model scores can be combined safely
 - A disk cache so product embeddings are generated once and reused
-- Candidate-aware questions based on entropy, coverage, and answerability
+- A counterfactual question planner with a public-set-validated safety policy
+- A versioned intent ledger that preserves unrelated preferences during corrections
+- An optional decision trace explaining state, retrieval strategy, and question value
 - Separate memory and recommendation history for every shopper session
 - Catalogue grounding, which means the model never invents product IDs
 
@@ -64,8 +68,8 @@ Public-set tuning can overfit, so these numbers are not a promise about the priv
 Customer message
        |
        v
-Intent tracker
-  route + slots + budget + exclusions + corrections
+Versioned intent ledger
+  active + replaced + removed preferences
        |
        v
 Field-weighted BM25 candidate search
@@ -81,7 +85,8 @@ nomic-embed-text                 correction safety gate
              Grounded Top 10 products
                        |
                        v
-          Candidate-aware follow-up question
+          Counterfactual question planner
+     simulate candidate reduction + Top-10 gain
 ```
 
 The model does not generate recommendations directly. It only compares the meaning of a customer request with real catalogue products returned by BM25.
@@ -92,8 +97,8 @@ More detail is available in [docs/architecture.md](docs/architecture.md).
 
 | Criterion | Evidence in this repository |
 |---|---|
-| Technical Execution (35%) | Separate intent, retrieval, model-client, dialogue, and cache components; bounded neural reranking; clear startup errors; 16 automated tests; measured evaluation |
-| Innovation & Problem Insight (20%) | Correction-aware semantic gating addresses a real weakness of embeddings instead of adding a model only for appearance |
+| Technical Execution (35%) | Separate intent, retrieval, model-client, dialogue, and cache components; bounded neural reranking; clear startup errors; 19 automated tests; measured evaluation |
+| Innovation & Problem Insight (20%) | A versioned intent ledger and counterfactual question simulation address stale preferences and unnecessary questions; correction-aware semantic gating handles embedding weakness around negation |
 | Impact & Relevance (20%) | Handles browsing, specific buying, follow-up answers, uncertainty, non-repeating results, and changed requirements |
 | Feasibility & Practicality (15%) | Local Apache-2.0 model, no paid calls, reusable embedding cache, small candidate window, and catalogue-grounded output |
 | Presentation & Communication (10%) | Reproducible commands, architecture notes, ablation evidence, honest limitations, and readable project structure |
@@ -102,14 +107,15 @@ More detail is available in [docs/architecture.md](docs/architecture.md).
 
 ```text
 starter/agent.py                 conversation flow and session memory
-starter/intent.py                intent, route, constraint, and correction tracking
+starter/intent.py                versioned preference ledger and active intent state
 starter/retrieval.py             BM25 search, semantic reranking, and rank fusion
 starter/ollama_embeddings.py     Ollama client and persistent embedding cache
-starter/dialogue.py              candidate-aware clarification policy
+starter/dialogue.py              counterfactual question simulation and selection
 evaluator/local_evaluator.py     organizer-provided evaluation harness
 tests/                           behaviour, model-client, cache, and evaluator tests
 docs/architecture.md             design details and data flow
 docs/ollama_ablation.md          measured experiments and decisions
+docs/decision_engine.md          ledger, planner formula, and trace format
 ```
 
 ## Setup and installation
@@ -163,7 +169,7 @@ python3 -m unittest discover -v
 Expected result:
 
 ```text
-Ran 16 tests
+Ran 19 tests
 OK
 ```
 
@@ -189,15 +195,19 @@ The measured defaults should normally be kept unchanged.
 | `THREADLINE_SEMANTIC_WEIGHT` | `0.18` | Influence of semantic rank during reciprocal-rank fusion |
 | `THREADLINE_RERANK_LIMIT` | `16` | Number of BM25 candidates sent to the model |
 | `THREADLINE_CACHE_DIR` | `.threadline_cache` | Location of the reusable product embedding cache |
+| `THREADLINE_QUESTION_POLICY` | `guarded` | `guarded` keeps the verified policy; `counterfactual` enables the experimental unrestricted planner |
 
 ## Testing
 
-The 16 tests cover:
+The 19 tests cover:
 
 - Session isolation and non-repeating recommendations
 - Buying and Browsing routing
 - Follow-up preference updates
 - Intent correction and stale-preference removal
+- Selective slot replacement and attribute removal
+- Versioned ledger state and public decision traces
+- Counterfactual question-value metrics
 - The correction-aware semantic safety gate
 - Recommendations returned while asking a question
 - Budget and exclusion tracking
@@ -213,6 +223,7 @@ Tests use a small deterministic embedder so unit tests stay quick. The reported 
 - The 274 MB model cannot fit inside the submission form's 35 MB file-upload limit, so judges must download it during setup or already have it installed.
 - The first evaluation is slower while the product cache is populated.
 - Semantic reranking improved ranking quality but did not improve Hit Rate@10 on the public set.
+- Unrestricted counterfactual question selection improved Boundary recall but reduced the overall score, so the verified default uses it behind an answerability guardrail.
 - Intent Override and Boundary sessions remain the weakest scenarios.
 - The intent parser targets the challenge's clean English turns and needs more work for multilingual queries, slang, and spelling errors.
 - Catalogue metadata is incomplete, so aggressive hard filtering can remove useful products.

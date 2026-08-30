@@ -129,6 +129,62 @@ class AgentBehaviorTest(unittest.TestCase):
         self.assertEqual(intent.category, "shoes")
         self.assertIn("red", intent.slots["color"])
         self.assertNotIn("blue", intent.values())
+        blue_revision = next(
+            item for item in intent.ledger if "blue" in item.value.lower()
+        )
+        self.assertEqual("replaced", blue_revision.status)
+
+    def test_selective_replacement_keeps_unrelated_preferences(self) -> None:
+        self.agent.reset("customer", {})
+        self.agent.respond(
+            "customer",
+            "I'm looking for shoes. A key requirement is: leather; color: blue.",
+            1,
+            10,
+        )
+
+        response = self.agent.respond(
+            "customer",
+            "Make it black instead of blue.",
+            2,
+            10,
+        )
+        intent = self.agent._sessions["customer"]["intent"]
+
+        self.assertIn("leather", " ".join(intent.slots["material"]))
+        self.assertEqual(["black"], intent.slots["color"])
+        self.assertNotIn("blue", self.agent._sessions["customer"]["messages"][0].lower())
+        self.assertIn(
+            "replaced",
+            [item.status for item in intent.ledger if "blue" in item.value.lower()],
+        )
+        self.assertEqual("black", response["decision_trace"]["intent"]["active"]["color"][0])
+
+    def test_no_longer_matters_removes_only_that_attribute(self) -> None:
+        self.agent.reset("customer", {})
+        self.agent.respond(
+            "customer",
+            "I'm looking for shoes. A key requirement is: leather; color: blue.",
+            1,
+            10,
+        )
+
+        self.agent.respond("customer", "Color no longer matters.", 2, 10)
+        intent = self.agent._sessions["customer"]["intent"]
+
+        self.assertNotIn("color", intent.slots)
+        self.assertIn("leather", " ".join(intent.slots["material"]))
+
+    def test_decision_trace_explains_question_value(self) -> None:
+        self.agent.reset("customer", {})
+
+        response = self.agent.respond("customer", "I need shoes.", 1, 10)
+        clarification = response["decision_trace"]["clarification"]
+
+        self.assertEqual(response["ask_attribute"], clarification["attribute"])
+        self.assertGreaterEqual(clarification["expected_candidate_reduction"], 0.0)
+        self.assertLessEqual(clarification["expected_candidate_reduction"], 1.0)
+        self.assertIn("counterfactual_best_attribute", clarification)
 
     def test_agent_recommends_while_asking_a_question(self) -> None:
         self.agent.reset("customer", {})

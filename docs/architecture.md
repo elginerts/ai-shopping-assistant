@@ -4,13 +4,49 @@ This document explains why Threadline uses several small components instead of s
 
 ## Request flow
 
-1. `IntentTracker` updates the category, route, preferences, exclusions, and budget.
+1. `IntentTracker` writes additions, replacements, removals, exclusions, and category pivots to a versioned ledger.
 2. SQLite FTS5 retrieves a recall-focused candidate list from the frozen catalogue.
 3. During normal discovery, `nomic-embed-text` compares the request with the top 16 products.
 4. Reciprocal-rank fusion combines the lexical and semantic positions.
 5. After an explicit correction, semantic reranking is disabled for that session and the cleaned lexical conversation is used.
-6. `ClarificationPolicy` examines the candidate attributes and chooses the next question.
-7. The agent filters already-seen IDs and returns catalogue-grounded recommendations.
+6. `ClarificationPolicy` simulates the possible answers for every available attribute.
+7. A validated guardrail combines expected question value with answerability evidence.
+8. The agent filters already-seen IDs and returns catalogue-grounded recommendations plus an optional decision trace.
+
+## Versioned intent ledger
+
+Each preference revision records its attribute, value, status, source turn, and replacement link. The active `slots` view remains small and fast for retrieval, while the ledger keeps the history needed for debugging and explanations.
+
+Supported transitions include:
+
+- `active → replaced` when a shopper supplies a new value for the same attribute
+- `active → removed` when the shopper says an attribute no longer matters
+- a full preference retirement when the product category changes or the shopper explicitly rejects the earlier intent
+
+Selective corrections keep unrelated requirements. For example, “black instead of blue” replaces colour without removing an earlier leather requirement.
+
+## Counterfactual question planner
+
+For each possible question, the planner partitions the current candidates by their likely answer. It then calculates:
+
+- Expected candidate reduction after an answer
+- Expected increase in the chance that the remaining group fits inside the Top 10
+- Catalogue coverage for that attribute
+- An answerability prior based on observed evaluator behaviour
+
+The unrestricted planner is available for ablation, but it reduced the public TechnicalScore. The default keeps the measured high-yield opening and validated information-gain selector while still computing and exposing counterfactual values. This is deliberate: new reasoning is observable, but it does not replace a stronger policy without evidence.
+
+## Decision trace
+
+The optional `decision_trace` response field contains:
+
+- Active and historical ledger entries
+- The retrieval strategy used on that turn
+- Candidate and result counts
+- Selected question policy
+- Expected candidate reduction, expected Top-10 gain, coverage, and utility
+
+The official evaluator ignores extra fields. The trace is intended for debugging, a portfolio demo, and judge questions about how the system made a decision.
 
 ## Why retrieval comes before the model
 
@@ -49,5 +85,5 @@ Ollama is a required dependency. Startup checks the local `/api/tags` endpoint a
 - Catalogue indexing: linear in the number of products, completed once at startup.
 - Lexical search: handled by SQLite FTS5.
 - Neural reranking: at most 16 product embeddings plus one query embedding per eligible turn.
-- Candidate clarification: linear in the first 100 retrieved candidates and the small attribute set.
-- Session state: proportional to messages, asked attributes, and shown product IDs for one session.
+- Counterfactual planning: linear in the first 100 candidates multiplied by the eight supported question attributes.
+- Session state: proportional to messages, ledger revisions, asked attributes, and shown product IDs for one session.

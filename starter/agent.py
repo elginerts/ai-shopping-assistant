@@ -37,7 +37,9 @@ class Agent:
         )
         self.connection = self.index.connection
         self.intent_tracker = IntentTracker()
-        self.clarification_policy = ClarificationPolicy()
+        self.clarification_policy = ClarificationPolicy(
+            mode=os.getenv("THREADLINE_QUESTION_POLICY", "guarded")
+        )
         self._sessions: dict[str, dict] = {}
 
     def reset(self, session_id: str, user_profile: dict) -> None:
@@ -70,6 +72,7 @@ class Agent:
             session["intent"],
             user_message,
             session["last_asked_attribute"],
+            turn,
         )
         session["intent"] = intent
 
@@ -90,6 +93,16 @@ class Agent:
             if "ignore my earlier preference" in lowered_message:
                 category_request = session["messages"][0].split(".", maxsplit=1)[0]
                 session["messages"] = [category_request, user_message]
+            else:
+                session["messages"] = [intent.query_text()]
+
+        if intent.selective_revision:
+            # Recompile from active slots so replaced words cannot remain in
+            # the raw conversation query after a partial correction.
+            session["messages"] = [intent.query_text()]
+            session["seen_products"].clear()
+            session["asked_attributes"].clear()
+            session["use_semantic_reranker"] = False
 
         recommendations, candidate_ids = self.index.search(
             intent=intent,
@@ -100,13 +113,14 @@ class Agent:
             use_semantic_reranker=session["use_semantic_reranker"],
         )
 
-        ask_attribute, question = self.clarification_policy.choose(
+        question_decision = self.clarification_policy.choose(
             intent=intent,
             candidate_ids=candidate_ids,
             products=self.index.products,
             asked_attributes=session["asked_attributes"],
             adaptive=session["adaptive_questions"],
         )
+        ask_attribute = question_decision.attribute
         if ask_attribute:
             session["asked_attributes"].add(ask_attribute)
         session["last_asked_attribute"] = ask_attribute
@@ -115,10 +129,40 @@ class Agent:
         )
 
         route_label = "specific request" if intent.route == "buying" else "browsing request"
-        message = f"I’m treating this as a {route_label}. {question}"
+        message = f"I’m treating this as a {route_label}. {question_decision.question}"
         return {
             "message": message,
             "ask_attribute": ask_attribute,
             "recommendations": recommendations,
             "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+            "decision_trace": {
+                "intent": {
+                    "route": intent.route,
+                    "changed_this_turn": intent.changed,
+                    "selective_revision_this_turn": intent.selective_revision,
+                    "active": intent.active_state(),
+                    "history": [
+                        {
+                            "revision_id": item.revision_id,
+                            "attribute": item.attribute,
+                            "value": item.value,
+                            "status": item.status,
+                            "turn": item.turn,
+                            "replaced_by": item.replaced_by,
+                            "ended_turn": item.ended_turn,
+                        }
+                        for item in intent.ledger[-12:]
+                    ],
+                },
+                "retrieval": {
+                    "strategy": (
+                        "bm25_plus_nomic"
+                        if session["use_semantic_reranker"]
+                        else "lexical_after_correction"
+                    ),
+                    "candidate_count": len(candidate_ids),
+                    "returned_count": len(recommendations),
+                },
+                "clarification": question_decision.trace(),
+            },
         }

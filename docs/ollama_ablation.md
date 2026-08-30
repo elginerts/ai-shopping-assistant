@@ -17,6 +17,15 @@ More model influence was not automatically better. A weight of 0.35 moved releva
 
 The largest useful observation was scenario-specific: semantic reranking improved Boundary, Browsing, and Buying MRR, but weakened Intent Override. Disabling semantic reranking after a correction kept the benefits without accepting that regression.
 
+## Question-planner ablation
+
+| Policy | TechnicalScore | Hit@10 | MRR | MTTC | Boundary Hit@10 |
+|---|---:|---:|---:|---:|---:|
+| Guarded counterfactual trace | **0.792766** | **0.925** | **0.600220** | **3.490** | 0.60 |
+| Unrestricted counterfactual selection | 0.729011 | 0.885 | 0.494702 | 4.095 | **0.70** |
+
+The unrestricted planner found one more Boundary target, but it asked less answerable questions in the much larger Buying and Browsing groups. The default therefore keeps the counterfactual calculation visible while using the validated question sequence as a deployment guardrail.
+
 ## Runtime notes
 
 - Cold cache, 16 candidates: about 4 minutes 22 seconds on the development Mac.
