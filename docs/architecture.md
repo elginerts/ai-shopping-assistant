@@ -13,6 +13,8 @@ This document explains why Threadline uses several small components instead of s
 7. A validated guardrail combines expected question value with answerability evidence.
 8. The agent filters already-seen IDs and returns catalogue-grounded recommendations plus an optional decision trace.
 
+The retrieval boundary uses typed `RetrievalResult` and `RetrievalEvidence` objects. Recommendation IDs, planner candidates, and diagnostic stages therefore have an explicit contract instead of relying on tuple position or loosely shaped dictionaries.
+
 ## Versioned intent ledger
 
 Each preference revision records its attribute, value, status, source turn, and replacement link. The active `slots` view remains small and fast for retrieval, while the ledger keeps the history needed for debugging and explanations.

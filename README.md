@@ -108,7 +108,7 @@ More detail is available in [docs/architecture.md](docs/architecture.md).
 ```text
 starter/agent.py                 conversation flow and session memory
 starter/intent.py                versioned preference ledger and active intent state
-starter/retrieval.py             BM25 search, semantic reranking, and rank fusion
+starter/retrieval.py             typed retrieval pipeline, BM25, reranking, and rank fusion
 starter/ollama_embeddings.py     Ollama client and persistent embedding cache
 starter/dialogue.py              counterfactual question simulation and selection
 evaluator/local_evaluator.py     organizer-provided evaluation harness

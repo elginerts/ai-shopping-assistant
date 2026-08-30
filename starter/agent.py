@@ -119,14 +119,15 @@ class Agent:
             )
 
         seen_before = set(session["seen_products"])
-        recommendations, candidate_ids, retrieval_evidence = self.index.search(
+        retrieval = self.index.search(
             intent=intent,
-            profile=session["profile"],
             seen_products=session["seen_products"],
             top_k=top_k,
             conversation_query=" ".join(session["messages"]),
             use_semantic_reranker=session["use_semantic_reranker"],
         )
+        recommendations = list(retrieval.recommendations)
+        candidate_ids = list(retrieval.candidate_ids)
 
         question_decision = self.clarification_policy.choose(
             intent=intent,
@@ -140,7 +141,7 @@ class Agent:
             session["asked_attributes"].add(ask_attribute)
         session["last_asked_attribute"] = ask_attribute
         session["last_diagnostic"] = {
-            **retrieval_evidence,
+            **retrieval.evidence.as_dict(),
             "seen_before": sorted(seen_before),
             "ask_attribute": ask_attribute,
         }

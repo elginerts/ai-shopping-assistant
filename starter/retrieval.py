@@ -71,6 +71,33 @@ class ProductRecord:
     attributes: dict[str, tuple[str, ...]]
 
 
+@dataclass(frozen=True, slots=True)
+class RetrievalEvidence:
+    """Ranked stage snapshots used by the evaluator's failure audit."""
+
+    bm25_ranked: tuple[str, ...]
+    post_nomic_ranked: tuple[str, ...]
+    final_candidates: tuple[str, ...]
+    recommended: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, list[str]]:
+        return {
+            "bm25_ranked": list(self.bm25_ranked),
+            "post_nomic_ranked": list(self.post_nomic_ranked),
+            "final_candidates": list(self.final_candidates),
+            "recommended": list(self.recommended),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalResult:
+    """One explicit return type for recommendations, planning, and diagnostics."""
+
+    recommendations: tuple[dict[str, str], ...]
+    candidate_ids: tuple[str, ...]
+    evidence: RetrievalEvidence
+
+
 class CatalogIndex:
     """Grounded lexical retrieval with local neural semantic reranking."""
 
@@ -286,12 +313,11 @@ class CatalogIndex:
     def search(
         self,
         intent: ShoppingIntent,
-        profile: dict,
         seen_products: set[str],
         top_k: int,
         conversation_query: str,
         use_semantic_reranker: bool = True,
-    ) -> tuple[list[dict], list[str], dict[str, list[str]]]:
+    ) -> RetrievalResult:
         candidate_limit = min(300, max(100, top_k * 12 + len(seen_products)))
         full_query = intent.query_text() or intent.category
         lexical_limit = min(300, max(100, top_k + len(seen_products)))
@@ -341,12 +367,16 @@ class CatalogIndex:
             for parent_asin in recommendation_ids
         ]
         question_candidates = list(dict.fromkeys([*lexical_ranked, *semantic_candidates]))
-        retrieval_evidence = {
-            # These stage boundaries let the evaluator locate a failure
-            # without giving the search code access to the target product.
-            "bm25_ranked": bm25_ranked,
-            "post_nomic_ranked": post_nomic_ranked,
-            "final_candidates": question_candidates[:100],
-            "recommended": recommendation_ids,
-        }
-        return recommendations, question_candidates[:100], retrieval_evidence
+        # The index reports stages, but it never receives the correct target.
+        # This keeps diagnostic evidence separate from recommendation logic.
+        evidence = RetrievalEvidence(
+            bm25_ranked=tuple(bm25_ranked),
+            post_nomic_ranked=tuple(post_nomic_ranked),
+            final_candidates=tuple(question_candidates[:100]),
+            recommended=tuple(recommendation_ids),
+        )
+        return RetrievalResult(
+            recommendations=tuple(recommendations),
+            candidate_ids=tuple(question_candidates[:100]),
+            evidence=evidence,
+        )
