@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from starter.intent import COLORS, MATERIALS, USE_CASE_WORDS, ShoppingIntent
+from starter.ollama_embeddings import EmbeddingCache, OllamaEmbeddingClient
 
 
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
@@ -64,17 +65,30 @@ class ProductRecord:
     parent_asin: str
     title: str
     corpus: str
+    semantic_text: str
     price: float | None
     ranking_terms: tuple[str, ...]
     attributes: dict[str, tuple[str, ...]]
 
 
 class CatalogIndex:
-    """In-memory lexical and distributional retrieval over the frozen catalog."""
+    """Grounded lexical retrieval with local neural semantic reranking."""
 
-    def __init__(self, catalog_path: str | Path) -> None:
+    def __init__(
+        self,
+        catalog_path: str | Path,
+        embedder: OllamaEmbeddingClient,
+        semantic_weight: float = 0.18,
+        rerank_limit: int = 16,
+        embedding_cache: EmbeddingCache | None = None,
+    ) -> None:
         self.connection = sqlite3.connect(":memory:")
         self.products: dict[str, ProductRecord] = {}
+        self.embedder = embedder
+        self.semantic_weight = semantic_weight
+        self.rerank_limit = rerank_limit
+        self.embedding_cache = embedding_cache
+        self._embedding_cache: dict[str, tuple[float, ...]] = {}
         self._build(Path(catalog_path))
 
     def _build(self, catalog_path: Path) -> None:
@@ -101,6 +115,7 @@ class CatalogIndex:
                     parent_asin=parent_asin,
                     title=fields["title"],
                     corpus=corpus,
+                    semantic_text=self._semantic_text(fields),
                     price=parse_price(product.get("price")),
                     ranking_terms=tuple(terms(" ".join((
                         fields["title"], fields["categories"], fields["features"]
@@ -123,6 +138,59 @@ class CatalogIndex:
         if batch:
             cursor.executemany("INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?)", batch)
         self.connection.commit()
+
+    @staticmethod
+    def _semantic_text(fields: dict[str, str]) -> str:
+        # Short, labelled text gives the embedding model the useful product
+        # facts without feeding it a long block of repeated catalog metadata.
+        parts = [
+            f"title: {fields['title']}",
+            f"category: {fields['categories']}",
+            f"features: {fields['features']}",
+            f"details: {fields['details']}",
+            f"description: {fields['description']}",
+        ]
+        return " ".join(part for part in parts if part.split(": ", 1)[1])[:1400]
+
+    def _semantic_rerank(self, query: str, candidate_ids: list[str]) -> list[str]:
+        candidates = candidate_ids[:self.rerank_limit]
+        if self.embedding_cache:
+            cached = self.embedding_cache.get_many([
+                item for item in candidates if item not in self._embedding_cache
+            ])
+            self._embedding_cache.update(cached)
+        missing = [item for item in candidates if item not in self._embedding_cache]
+        inputs = [f"search_query: {query}"]
+        inputs.extend(
+            f"search_document: {self.products[item].semantic_text}"
+            for item in missing
+        )
+        vectors = self.embedder.embed(inputs)
+        query_vector = vectors[0]
+        new_vectors = dict(zip(missing, vectors[1:]))
+        self._embedding_cache.update(new_vectors)
+        if self.embedding_cache and new_vectors:
+            self.embedding_cache.put_many(new_vectors)
+        semantic_order = sorted(
+            candidates,
+            key=lambda item: sum(
+                left * right
+                for left, right in zip(query_vector, self._embedding_cache[item])
+            ),
+            reverse=True,
+        )
+        semantic_rank = {item: rank for rank, item in enumerate(semantic_order, start=1)}
+
+        # Reciprocal-rank fusion is stable across different score ranges. A
+        # small semantic weight improves meaning matches without throwing away
+        # the strong exact-match ordering from BM25.
+        fused = {
+            item: 1.0 / (60 + lexical_rank)
+            + self.semantic_weight / (60 + semantic_rank[item])
+            for lexical_rank, item in enumerate(candidates, start=1)
+        }
+        reranked = sorted(candidates, key=fused.get, reverse=True)
+        return [*reranked, *candidate_ids[self.rerank_limit:]]
 
     @staticmethod
     def _attributes(product: dict, fields: dict[str, str], corpus: str) -> dict[str, tuple[str, ...]]:
@@ -222,11 +290,14 @@ class CatalogIndex:
         seen_products: set[str],
         top_k: int,
         conversation_query: str,
+        use_semantic_reranker: bool = True,
     ) -> tuple[list[dict], list[str]]:
         candidate_limit = min(300, max(100, top_k * 12 + len(seen_products)))
         full_query = intent.query_text() or intent.category
         lexical_limit = min(300, max(100, top_k + len(seen_products)))
         lexical_ranked = self._rank_query(conversation_query, lexical_limit, expand=False)
+        if lexical_ranked and use_semantic_reranker:
+            lexical_ranked = self._semantic_rerank(conversation_query, lexical_ranked)
         recommendation_ids = [
             parent_asin for parent_asin in lexical_ranked
             if parent_asin not in seen_products

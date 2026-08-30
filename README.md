@@ -1,148 +1,230 @@
 # Threadline — Local AI Shopping Copilot
 
-Threadline is a fully local, multi-turn shopping agent built for TikTok TechJam 2026 Track 4. It searches the supplied 50,000-product catalog, remembers preferences across turns, detects when a shopper changes their mind, and asks useful clarification questions while continuing to recommend products.
+Threadline is a multi-turn shopping agent built for TikTok TechJam 2026 Track 4. It searches the supplied catalogue of 50,000 products, remembers what a shopper has said, asks useful follow-up questions, and adjusts when the shopper changes their mind.
 
-The main idea is to keep simple searches fast and only use the more advanced retrieval steps when they are actually needed. Clear requests go through a field-weighted keyword ranker, while vague requests can use local query expansion and candidate-aware follow-up questions. No API key, network connection, paid model, or evaluator-owned credential is required.
+The project uses the open-source `nomic-embed-text` model through Ollama. Everything runs locally, so there are no API keys, paid credits, or external requests during evaluation.
 
-## Why this is different
+## The problem I wanted to solve
 
-Most shopping assistants either search once or put a chatbot in front of keyword search. Threadline treats the conversation itself as a changing retrieval problem:
+Shopping search is rarely one perfect sentence. A shopper might begin with “I need running shoes,” add a material preference later, reject a colour, or replace an earlier requirement completely. A useful assistant needs to search while that conversation is still developing.
 
-- Buying and browsing requests follow different state paths.
-- Later answers refine the original request instead of replacing it.
-- Explicit intent changes clear stale preferences and safely reconsider products.
-- Recommendations appear on every turn; clarification does not block discovery.
-- Questions can adapt to the live candidate set using entropy and coverage.
-- Products already shown are not repeated unless the intent genuinely changes.
+Threadline handles four parts of that problem:
 
-## Measured public-set result
+- It separates specific Buying requests from open-ended Browsing requests.
+- It combines exact keyword evidence with neural meaning similarity.
+- It asks questions that help separate the current product candidates.
+- It removes stale preferences when the shopper changes their intent.
 
-Run on the organizer-provided 200-session public development set:
+Recommendations are returned on every turn. The shopper does not have to finish a long questionnaire before seeing products.
 
-| Metric | Starter baseline | Threadline local |
-|---|---:|---:|
-| TechnicalScore | 0.106710 | **0.789582** |
-| Hit Rate@10 | 0.125 | **0.925** |
-| MRR | 0.068034 | **0.589605** |
-| MTTC | 9.81 | **3.49** |
-| Model tokens | — | **0** |
+## What makes Threadline different
 
-The detailed run is stored in `results.json`. Public-set tuning can overfit, so this score is evidence of progress rather than a private-set guarantee.
+The main idea is a **correction-aware hybrid search**.
+
+Ollama embeddings are useful when two phrases mean the same thing but use different words. However, embedding models can be less reliable around negation, such as “not blue anymore.” Threadline therefore uses semantic reranking during normal discovery and switches to the cleaned lexical state after an explicit correction. This avoids carrying the meaning of an old preference into the new search.
+
+Other design choices include:
+
+- A field-weighted SQLite FTS5 index for fast catalogue retrieval
+- Neural reranking over only the top 16 candidates instead of all 50,000 products
+- Reciprocal-rank fusion so BM25 and model scores can be combined safely
+- A disk cache so product embeddings are generated once and reused
+- Candidate-aware questions based on entropy, coverage, and answerability
+- Separate memory and recommendation history for every shopper session
+- Catalogue grounding, which means the model never invents product IDs
+
+## Verified public result
+
+The latest result uses the organizer-provided 200-session public development set.
+
+| Metric | Starter baseline | Before Ollama | Threadline + Ollama |
+|---|---:|---:|---:|
+| TechnicalScore | 0.106710 | 0.789582 | **0.792766** |
+| Hit Rate@10 | 0.125 | 0.925 | **0.925** |
+| MRR | 0.068034 | 0.589605 | **0.600220** |
+| MTTC | 9.81 | 3.49 | **3.49** |
+| Reported generative tokens | — | 0 | **0** |
+
+Scenario results:
+
+| Scenario | Hit Rate@10 | MRR | MTTC |
+|---|---:|---:|---:|
+| Boundary | 0.6000 | 0.533333 | 6.50 |
+| Browsing | 0.9875 | 0.596637 | 2.8875 |
+| Buying | 0.9500 | 0.625342 | 2.75 |
+| Intent Override | 0.8000 | 0.565079 | 6.0667 |
+
+The first full run on the development Mac took about 4 minutes 22 seconds while building a 21 MB embedding cache. The final warm-cache verification took about 40 seconds. Hardware will affect these timings.
+
+Public-set tuning can overfit, so these numbers are not a promise about the private set. The ablations and rejected settings are documented in [docs/ollama_ablation.md](docs/ollama_ablation.md).
 
 ## Architecture
 
 ```text
-Customer turn
-    |
-    v
-Local intent tracker -----> route: buying / browsing
-    |                       slots, budget, exclusions, override
-    v
-Confidence-gated retrieval
-    |-- lexical anchor: weighted SQLite FTS5 BM25
-    `-- low-recall recovery: query expansion + pseudo-relevance feedback
-    |
-    v
-Candidate-grounded clarification
-    |-- reliable high-yield opening sequence
-    `-- entropy × coverage × answerability for uncertain shoppers
-    |
-    v
-Catalog-valid Top 10 + isolated session memory
+Customer message
+       |
+       v
+Intent tracker
+  route + slots + budget + exclusions + corrections
+       |
+       v
+Field-weighted BM25 candidate search
+       |
+       +------------------------------+
+       | normal request               | corrected request
+       v                              v
+Ollama semantic reranker         Clean lexical ranking
+nomic-embed-text                 correction safety gate
+       |                              |
+       +---------------+--------------+
+                       v
+             Grounded Top 10 products
+                       |
+                       v
+          Candidate-aware follow-up question
 ```
 
-The AI part runs locally. It tracks intent from natural language, chooses a search route, expands weak queries, and selects useful follow-up questions from the current candidates. It is not a generative model, which keeps the system repeatable, private, free to run, and suitable for a network-restricted scoring environment.
+The model does not generate recommendations directly. It only compares the meaning of a customer request with real catalogue products returned by BM25.
 
-## Judging criteria
+More detail is available in [docs/architecture.md](docs/architecture.md).
 
-| Criterion | Evidence |
+## How this matches the judging criteria
+
+| Criterion | Evidence in this repository |
 |---|---|
-| Technical Execution (35%) | Modular intent, dialogue, and retrieval layers; FTS5 index; route fusion; bounded candidate work; isolated state; automated tests; measured evaluation |
-| Innovation & Problem Insight (20%) | Confidence-gated semantic recovery and candidate-aware clarification address uncertainty without paid inference |
-| Impact & Relevance (20%) | Supports exploration, follow-up answers, corrections, budgets, exclusions, and non-repeating results |
-| Feasibility & Practicality (15%) | Standard-library-only runtime, zero credentials, zero model tokens, frozen-catalog grounding, and roughly 20-second public evaluation |
-| Presentation & Communication (10%) | Reproducible metrics, clear architecture, honest limitations, documented decisions, and a demo-ready flow |
+| Technical Execution (35%) | Separate intent, retrieval, model-client, dialogue, and cache components; bounded neural reranking; clear startup errors; 16 automated tests; measured evaluation |
+| Innovation & Problem Insight (20%) | Correction-aware semantic gating addresses a real weakness of embeddings instead of adding a model only for appearance |
+| Impact & Relevance (20%) | Handles browsing, specific buying, follow-up answers, uncertainty, non-repeating results, and changed requirements |
+| Feasibility & Practicality (15%) | Local Apache-2.0 model, no paid calls, reusable embedding cache, small candidate window, and catalogue-grounded output |
+| Presentation & Communication (10%) | Reproducible commands, architecture notes, ablation evidence, honest limitations, and readable project structure |
 
 ## Repository structure
 
 ```text
-starter/agent.py              multi-turn orchestration and session isolation
-starter/intent.py             local intent, constraint, route, and override tracking
-starter/retrieval.py          catalog index, lexical anchor, and semantic recovery
-starter/dialogue.py           information-gain clarification policy
-evaluator/local_evaluator.py  organizer-provided evaluation harness
-tests/                        behavior and evaluator contract tests
-docs/                         supplied rules, specification, and baseline evidence
-results.json                  latest reproducible public evaluation
+starter/agent.py                 conversation flow and session memory
+starter/intent.py                intent, route, constraint, and correction tracking
+starter/retrieval.py             BM25 search, semantic reranking, and rank fusion
+starter/ollama_embeddings.py     Ollama client and persistent embedding cache
+starter/dialogue.py              candidate-aware clarification policy
+evaluator/local_evaluator.py     organizer-provided evaluation harness
+tests/                           behaviour, model-client, cache, and evaluator tests
+docs/architecture.md             design details and data flow
+docs/ollama_ablation.md          measured experiments and decisions
 ```
 
 ## Setup and installation
 
-Requirements:
+You need:
 
 - Python 3.10 or newer
-- SQLite with FTS5 (included with normal Python installations)
+- SQLite with FTS5, which is included with normal Python installations
+- [Ollama](https://ollama.com/download)
 - The supplied `data/catalog.jsonl`
+- About 274 MB for `nomic-embed-text`, plus space for the generated cache
 
-No package installation is needed. The runtime uses only the Python standard library. If the catalog is missing, verify and extract the participant-kit download, then place it at `data/catalog.jsonl` as described in `data/README.md`.
+On macOS with Homebrew:
 
-## Reproduce the results
+```bash
+brew install ollama
+brew services start ollama
+ollama pull nomic-embed-text
+```
 
-From the repository root, run:
+On another operating system, install Ollama using its official instructions, start the service, and then run:
+
+```bash
+ollama pull nomic-embed-text
+```
+
+Confirm that the model is ready:
+
+```bash
+ollama list
+```
+
+The output should include `nomic-embed-text`. No Python packages need to be installed.
+
+If the catalogue is missing, verify and extract the participant-kit download, then place it at `data/catalog.jsonl` as described in [data/README.md](data/README.md).
+
+## Run the project
+
+Start Ollama if it is not already running:
+
+```bash
+ollama serve
+```
+
+Run the tests:
 
 ```bash
 python3 -m unittest discover -v
+```
+
+Expected result:
+
+```text
+Ran 16 tests
+OK
+```
+
+Run the public evaluator:
+
+```bash
 python3 -m evaluator.local_evaluator \
   --dataset data/public_set.jsonl \
   --catalog data/catalog.jsonl \
   --output results.json
 ```
 
-Expected test result:
+The first run creates `.threadline_cache/product_embeddings.sqlite3`. Later runs reuse it. The cache, model, catalogue, and evaluation output are intentionally not committed to GitHub.
 
-```text
-Ran 12 tests
-OK
-```
+Threadline requires Ollama and `nomic-embed-text`. There is no non-model fallback. If either is missing, startup stops with a clear command showing how to fix the setup.
 
-The evaluator prints the summary and writes session-level evidence to `results.json`.
+## Configuration
 
-## Important implementation choices
+The measured defaults should normally be kept unchanged.
 
-### Grounded recommendations
-
-The agent never invents product identifiers. Every returned `parent_asin` comes from the local catalog index.
-
-### Confidence-gated retrieval
-
-The weighted BM25 anchor is fast and reliable for specific product language. More expensive multi-route expansion only runs when the first pass cannot fill the result slate. This provides semantic recovery without slowing every ordinary query.
-
-### Adaptive clarification
-
-Early questions use attributes the public customer simulator can answer reliably. If the shopper remains uncertain, the policy measures how well each attribute separates the current candidates. It balances normalized entropy, catalog coverage, and expected answerability.
-
-### Dynamic intent
-
-Each session has isolated memory. The tracker records category, preference slots, exclusions, budget, route, and intent changes. A confirmed override clears stale state and allows previously seen products to be reconsidered.
+| Variable | Default | Purpose |
+|---|---:|---|
+| `THREADLINE_SEMANTIC_WEIGHT` | `0.18` | Influence of semantic rank during reciprocal-rank fusion |
+| `THREADLINE_RERANK_LIMIT` | `16` | Number of BM25 candidates sent to the model |
+| `THREADLINE_CACHE_DIR` | `.threadline_cache` | Location of the reusable product embedding cache |
 
 ## Testing
 
-Tests cover session isolation, routing, follow-up slot updates, intent overrides, simultaneous recommendation and clarification, result diversity, reconsideration after an override, constraint tracking, zero external model usage, and evaluator scoring.
+The 16 tests cover:
+
+- Session isolation and non-repeating recommendations
+- Buying and Browsing routing
+- Follow-up preference updates
+- Intent correction and stale-preference removal
+- The correction-aware semantic safety gate
+- Recommendations returned while asking a question
+- Budget and exclusion tracking
+- Required-model error messages
+- Embedding normalization and cache round trips
+- Evaluator response normalization and scoring
+
+Tests use a small deterministic embedder so unit tests stay quick. The reported public score was produced with the real Ollama model.
 
 ## Limitations and reflection
 
-- The semantic layer is lightweight distributional retrieval, not a neural embedding model. It can miss wording gaps that a trained encoder would recognize.
-- Catalog metadata is incomplete. Hard filtering every inferred constraint can remove a relevant product, so the lexical path is recall-first while constraints guide state and recovery.
-- The parser targets the challenge's clean English turns; slang, multilingual input, and spelling errors need broader normalization.
-- Price parsing handles common numeric formats but not currency conversion.
-- The 200 public sessions are too small to prove generalization to the private set.
-- There is no graphical interface because the challenge evaluates a headless API; a polished demo UI would improve the final presentation.
+- Ollama and `nomic-embed-text` must be installed before the program starts.
+- The 274 MB model cannot fit inside the submission form's 35 MB file-upload limit, so judges must download it during setup or already have it installed.
+- The first evaluation is slower while the product cache is populated.
+- Semantic reranking improved ranking quality but did not improve Hit Rate@10 on the public set.
+- Intent Override and Boundary sessions remain the weakest scenarios.
+- The intent parser targets the challenge's clean English turns and needs more work for multilingual queries, slang, and spelling errors.
+- Catalogue metadata is incomplete, so aggressive hard filtering can remove useful products.
+- There is no graphical interface because the supplied challenge evaluates a headless agent.
 
-Given more time, I would add a locally bundled embedding model, train a small reranker on a held-out split, calibrate confidence, run systematic ablations, and build an interactive product-card demo with visible intent changes and clarification rationale.
+With more time, I would train a small shopping-specific reranker on a separate validation split, add multilingual intent tests, compress the embedding cache, and build a product-card demo that shows how the live intent and ranking change after every message.
 
-## External services and privacy
+## External service and model disclosure
 
-Threadline requires **no external service**, API key, live credential, or network access. Evaluation is entirely local. Publishing this repository cannot expose or consume paid credits because none are used.
+Ollama runs as a required service on `localhost`. After Ollama and the model have been downloaded, Threadline does not need internet access, live credentials, or paid credits. The model is not stored in this GitHub repository.
+
+`nomic-embed-text` is distributed under the Apache License 2.0. See the [Ollama model page](https://ollama.com/library/nomic-embed-text) for model details.
 
 ## Team contribution
 
@@ -150,4 +232,4 @@ This is a solo submission done by Er Teng Sheng Elgin.
 
 ## Data attribution
 
-The catalog and sessions are derived from Amazon Reviews 2023 by McAuley Lab, UCSD. See [DATA_ATTRIBUTION.md](DATA_ATTRIBUTION.md). The starter kit, evaluator, and competition specification were provided by TechJam 2026.
+The catalogue and sessions are derived from Amazon Reviews 2023 by McAuley Lab, UCSD. See [DATA_ATTRIBUTION.md](DATA_ATTRIBUTION.md). The starter kit, evaluator, and competition specification were provided by TechJam 2026.

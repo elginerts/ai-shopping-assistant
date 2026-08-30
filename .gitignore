@@ -17,4 +17,5 @@ tests/test_5core_builder.py
 tests/test_organizer_pipeline.py
 *.log
 /results*.json
+/.threadline_cache/
 /starter/original_agent.py

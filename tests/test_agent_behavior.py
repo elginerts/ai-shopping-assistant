@@ -8,6 +8,26 @@ from pathlib import Path
 from starter.agent import Agent
 
 
+class FakeEmbedder:
+    # Tests use predictable character counts instead of starting Ollama.
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def embed(self, texts: list[str]) -> list[tuple[float, ...]]:
+        self.calls += 1
+        vectors = []
+        for value in texts:
+            lowered = value.lower()
+            raw = (
+                float(lowered.count("running") + 1),
+                float(lowered.count("winter") + 1),
+                float(lowered.count("shoe") + 1),
+            )
+            length = sum(item * item for item in raw) ** 0.5
+            vectors.append(tuple(item / length for item in raw))
+        return vectors
+
+
 class AgentBehaviorTest(unittest.TestCase):
     def setUp(self) -> None:
         # The fake catalog is small, but it still goes through the real SQLite
@@ -50,7 +70,7 @@ class AgentBehaviorTest(unittest.TestCase):
             "".join(json.dumps(product) + "\n" for product in products),
             encoding="utf-8",
         )
-        self.agent = Agent(catalog_path)
+        self.agent = Agent(catalog_path, embedder=FakeEmbedder())
 
     def tearDown(self) -> None:
         self.agent.connection.close()
@@ -160,6 +180,20 @@ class AgentBehaviorTest(unittest.TestCase):
         response = self.agent.respond("customer", "I need shoes.", 1, 10)
 
         self.assertEqual(response["usage"], {"prompt_tokens": 0, "completion_tokens": 0})
+
+    def test_semantic_reranking_stops_after_an_intent_correction(self) -> None:
+        self.agent.reset("customer", {})
+        self.agent.respond("customer", "I need blue shoes.", 1, 10)
+        calls_before_override = self.agent.embedder.calls
+
+        self.agent.respond(
+            "customer",
+            "Actually, ignore my earlier preference. What I need is: red shoes.",
+            2,
+            10,
+        )
+
+        self.assertEqual(calls_before_override, self.agent.embedder.calls)
 
 
 if __name__ == "__main__":

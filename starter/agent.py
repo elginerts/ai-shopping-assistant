@@ -1,18 +1,40 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from starter.dialogue import ClarificationPolicy
 from starter.intent import IntentTracker, ShoppingIntent
+from starter.ollama_embeddings import EmbeddingCache, OllamaEmbeddingClient
 from starter.retrieval import CatalogIndex
 
 
 class Agent:
     """Local multi-turn shopping agent used by the official evaluator."""
 
-    def __init__(self, catalog_path: str | Path = "data/catalog.jsonl") -> None:
+    def __init__(
+        self,
+        catalog_path: str | Path = "data/catalog.jsonl",
+        embedder: OllamaEmbeddingClient | None = None,
+    ) -> None:
         self.catalog_path = Path(catalog_path)
-        self.index = CatalogIndex(self.catalog_path)
+        supplied_embedder = embedder is not None
+        self.embedder = embedder or OllamaEmbeddingClient()
+        embedding_cache = None
+        if not supplied_embedder:
+            cache_directory = Path(os.getenv("THREADLINE_CACHE_DIR", ".threadline_cache"))
+            cache_directory.mkdir(parents=True, exist_ok=True)
+            embedding_cache = EmbeddingCache(
+                str(cache_directory / "product_embeddings.sqlite3"),
+                self.embedder.model_name,
+            )
+        self.index = CatalogIndex(
+            self.catalog_path,
+            self.embedder,
+            semantic_weight=float(os.getenv("THREADLINE_SEMANTIC_WEIGHT", "0.18")),
+            rerank_limit=int(os.getenv("THREADLINE_RERANK_LIMIT", "16")),
+            embedding_cache=embedding_cache,
+        )
         self.connection = self.index.connection
         self.intent_tracker = IntentTracker()
         self.clarification_policy = ClarificationPolicy()
@@ -29,6 +51,7 @@ class Agent:
             "asked_attributes": set(),
             "last_asked_attribute": None,
             "adaptive_questions": False,
+            "use_semantic_reranker": True,
         }
 
     def respond(
@@ -61,6 +84,9 @@ class Agent:
             # A new intent deserves a clean recommendation and question slate.
             session["seen_products"].clear()
             session["asked_attributes"].clear()
+            # Dense embeddings are good at meaning, but less reliable with
+            # negation. After a correction, the cleaned lexical state is safer.
+            session["use_semantic_reranker"] = False
             if "ignore my earlier preference" in lowered_message:
                 category_request = session["messages"][0].split(".", maxsplit=1)[0]
                 session["messages"] = [category_request, user_message]
@@ -71,6 +97,7 @@ class Agent:
             seen_products=session["seen_products"],
             top_k=top_k,
             conversation_query=" ".join(session["messages"]),
+            use_semantic_reranker=session["use_semantic_reranker"],
         )
 
         ask_attribute, question = self.clarification_policy.choose(
