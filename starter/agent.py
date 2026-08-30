@@ -61,6 +61,7 @@ class Agent:
             "last_asked_attribute": None,
             "adaptive_questions": False,
             "use_semantic_reranker": True,
+            "last_diagnostic": {},
         }
 
     def respond(
@@ -117,7 +118,8 @@ class Agent:
                 self.correction_semantic_mode == "clean"
             )
 
-        recommendations, candidate_ids = self.index.search(
+        seen_before = set(session["seen_products"])
+        recommendations, candidate_ids, retrieval_evidence = self.index.search(
             intent=intent,
             profile=session["profile"],
             seen_products=session["seen_products"],
@@ -137,6 +139,11 @@ class Agent:
         if ask_attribute:
             session["asked_attributes"].add(ask_attribute)
         session["last_asked_attribute"] = ask_attribute
+        session["last_diagnostic"] = {
+            **retrieval_evidence,
+            "seen_before": sorted(seen_before),
+            "ask_attribute": ask_attribute,
+        }
         session["seen_products"].update(
             item["parent_asin"] for item in recommendations
         )
@@ -178,4 +185,14 @@ class Agent:
                 },
                 "clarification": question_decision.trace(),
             },
+        }
+
+    def diagnostic_snapshot(self, session_id: str) -> dict:
+        """Return stage evidence for the latest turn without exposing it in the API."""
+        if session_id not in self._sessions:
+            return {}
+        diagnostic = self._sessions[session_id].get("last_diagnostic", {})
+        return {
+            key: list(value) if isinstance(value, list) else value
+            for key, value in diagnostic.items()
         }

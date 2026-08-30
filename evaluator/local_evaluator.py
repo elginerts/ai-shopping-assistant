@@ -201,6 +201,85 @@ def metric_summary(sessions: list[dict]) -> dict:
     }
 
 
+def _rank_in(values: object, target: str) -> int | None:
+    if not isinstance(values, list) or target not in values:
+        return None
+    return values.index(target) + 1
+
+
+def _remaining_constraint_attributes(sample: dict, disclosed: set[str]) -> set[str]:
+    card = sample.get("intent_card") or {}
+    constraints = [
+        *[str(value) for value in card.get("hard_constraints", [])],
+        *[str(value) for value in card.get("soft_preferences", [])],
+    ]
+    return {classify_constraint(value) for value in constraints if value not in disclosed}
+
+
+def failure_diagnostic(
+    sample: dict,
+    target: str,
+    turns: list[dict],
+) -> dict:
+    """Classify a miss using evidence collected without target-aware retrieval."""
+    eligible = [turn for turn in turns if turn["override_applied"]]
+    before_override = [turn for turn in turns if not turn["override_applied"]]
+
+    absent_from_bm25 = all(turn["target_bm25_rank"] is None for turn in eligible)
+    pushed_down_by_nomic = any(
+        turn["target_bm25_rank"] is not None
+        and turn["target_bm25_rank"] <= TOP_K
+        and (turn["target_post_nomic_rank"] is None or turn["target_post_nomic_rank"] > TOP_K)
+        for turn in eligible
+    )
+    below_top_10 = any(
+        turn["target_final_candidate_rank"] is not None
+        and turn["target_final_candidate_rank"] > TOP_K
+        for turn in eligible
+    )
+    shown_before_override = any(turn["target_recommendation_rank"] is not None for turn in before_override)
+    question_mismatch_turns = [
+        turn["turn"] for turn in eligible
+        if turn["question_path_mismatch"]
+    ]
+
+    reasons: list[str] = []
+    if absent_from_bm25:
+        reasons.append("absent_from_bm25_candidates")
+    if pushed_down_by_nomic:
+        reasons.append("pushed_down_by_nomic")
+    if below_top_10:
+        reasons.append("final_candidate_below_top_10")
+    if shown_before_override:
+        reasons.append("previously_shown_before_override")
+    if question_mismatch_turns:
+        reasons.append("likely_wrong_question_path")
+    if not reasons:
+        reasons.append("unclassified_ranking_or_filtering_failure")
+
+    return {
+        "sample_id": sample["sample_id"],
+        "scenario_type": sample["scenario_type"],
+        "target_parent_asin": target,
+        "primary_reason": reasons[0],
+        "reasons": reasons,
+        "question_mismatch_turns": question_mismatch_turns,
+        "turns": eligible,
+    }
+
+
+def diagnostic_summary(failures: list[dict]) -> dict:
+    counts: defaultdict[str, int] = defaultdict(int)
+    for failure in failures:
+        for reason in failure["reasons"]:
+            counts[reason] += 1
+    return {
+        "failed_session_count": len(failures),
+        "reason_counts": dict(sorted(counts.items())),
+        "note": "One failed session may have more than one observed reason.",
+    }
+
+
 def materialize_hidden_fields(sample: dict, products: dict[str, dict]) -> tuple[dict, dict]:
     if "intent_card" in sample and "behavior" in sample:
         return sample["intent_card"], sample["behavior"]
@@ -221,6 +300,7 @@ def evaluate(
     products: dict[str, dict],
 ) -> dict:
     sessions: list[dict] = []
+    failures: list[dict] = []
     total_prompt_tokens = 0
     total_completion_tokens = 0
     for sample in samples:
@@ -235,6 +315,7 @@ def evaluate(
         user_message = initial_message(effective_sample, coarse_category(categories.get(target, [])), disclosed)
         hit_turn: int | None = None
         best_rank: int | None = None
+        diagnostic_turns: list[dict] = []
         for turn in range(1, MAX_TURNS + 1):
             try:
                 response = agent.respond(session_id, user_message, turn, TOP_K)
@@ -249,6 +330,27 @@ def evaluate(
                 if isinstance(usage.get("completion_tokens"), int) and usage["completion_tokens"] >= 0:
                     total_completion_tokens += usage["completion_tokens"]
             ranked = normalize_recommendations(response.get("recommendations"), catalog_ids)
+            snapshot_method = getattr(agent, "diagnostic_snapshot", None)
+            snapshot = snapshot_method(session_id) if callable(snapshot_method) else {}
+            remaining_attributes = _remaining_constraint_attributes(effective_sample, disclosed)
+            asked_attribute = response.get("ask_attribute")
+            diagnostic_turns.append({
+                "turn": turn,
+                "override_applied": override_applied,
+                "ask_attribute": asked_attribute,
+                "remaining_constraint_attributes": sorted(remaining_attributes),
+                "question_path_mismatch": bool(
+                    asked_attribute
+                    and remaining_attributes
+                    and asked_attribute != "other"
+                    and asked_attribute not in remaining_attributes
+                ),
+                "target_bm25_rank": _rank_in(snapshot.get("bm25_ranked"), target),
+                "target_post_nomic_rank": _rank_in(snapshot.get("post_nomic_ranked"), target),
+                "target_final_candidate_rank": _rank_in(snapshot.get("final_candidates"), target),
+                "target_recommendation_rank": _rank_in(ranked, target),
+                "target_seen_before_turn": target in snapshot.get("seen_before", []),
+            })
             if override_applied and target in ranked:
                 best_rank = ranked.index(target) + 1
                 hit_turn = turn
@@ -266,14 +368,17 @@ def evaluate(
                 user_message, boundary_used = customer_reply(
                     effective_sample, response.get("ask_attribute"), disclosed, boundary_used
                 )
-        sessions.append({
+        session_result = {
             "sample_id": sample["sample_id"],
             "scenario_type": sample["scenario_type"],
             "hit": hit_turn is not None,
             "first_hit_turn": hit_turn,
             "best_rank": best_rank,
             "reciprocal_rank": 0.0 if best_rank is None else 1.0 / best_rank,
-        })
+        }
+        sessions.append(session_result)
+        if hit_turn is None:
+            failures.append(failure_diagnostic(effective_sample, target, diagnostic_turns))
 
     overall = metric_summary(sessions)
     efficiency = max(0.0, min(1.0, (11.0 - float(overall["mttc"])) / 10.0))
@@ -291,6 +396,8 @@ def evaluate(
             "total_tokens": total_prompt_tokens + total_completion_tokens,
         },
         "scenario_metrics": {name: metric_summary(grouped[name]) for name in sorted(grouped)},
+        "failure_diagnostic_summary": diagnostic_summary(failures),
+        "failure_diagnostics": failures,
         "sessions": sessions,
     }
 
@@ -300,12 +407,28 @@ def main() -> None:
     parser.add_argument("--catalog", default="data/catalog.jsonl")
     parser.add_argument("--dataset", default="data/public_set.jsonl")
     parser.add_argument("--output", default="results.json")
+    parser.add_argument(
+        "--diagnostics-output",
+        help="Optional separate JSON report containing only failed-session diagnostics",
+    )
     args = parser.parse_args()
     samples = load_jsonl(args.dataset)
     catalog_ids, categories, products = catalog_index(args.catalog)
     result = evaluate(Agent(args.catalog), samples, catalog_ids, categories, products)
     Path(args.output).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({key: value for key, value in result.items() if key != "sessions"}, indent=2))
+    if args.diagnostics_output:
+        diagnostic_report = {
+            "summary": result["failure_diagnostic_summary"],
+            "failures": result["failure_diagnostics"],
+        }
+        Path(args.diagnostics_output).write_text(
+            json.dumps(diagnostic_report, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    hidden_from_console = {"sessions", "failure_diagnostics"}
+    print(json.dumps({
+        key: value for key, value in result.items() if key not in hidden_from_console
+    }, indent=2))
 
 
 if __name__ == "__main__":

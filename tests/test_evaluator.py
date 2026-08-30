@@ -5,7 +5,14 @@ from pathlib import Path
 import json
 import tempfile
 
-from evaluator.local_evaluator import catalog_index, evaluate, metric_summary, normalize_recommendations
+from evaluator.local_evaluator import (
+    catalog_index,
+    diagnostic_summary,
+    evaluate,
+    failure_diagnostic,
+    metric_summary,
+    normalize_recommendations,
+)
 
 
 class EchoTargetAgent:
@@ -20,6 +27,31 @@ class EchoTargetAgent:
 
 
 class EvaluatorTest(unittest.TestCase):
+    def test_failure_diagnostic_records_each_retrieval_stage(self) -> None:
+        sample = {"sample_id": "miss_1", "scenario_type": "intent_override"}
+        turns = [
+            {
+                "turn": 1, "override_applied": False,
+                "target_bm25_rank": 2, "target_post_nomic_rank": 3,
+                "target_final_candidate_rank": 3, "target_recommendation_rank": 3,
+                "question_path_mismatch": False,
+            },
+            {
+                "turn": 3, "override_applied": True,
+                "target_bm25_rank": 8, "target_post_nomic_rank": 14,
+                "target_final_candidate_rank": 14, "target_recommendation_rank": None,
+                "question_path_mismatch": True,
+            },
+        ]
+
+        diagnostic = failure_diagnostic(sample, "TARGET", turns)
+
+        self.assertEqual(diagnostic["primary_reason"], "pushed_down_by_nomic")
+        self.assertIn("final_candidate_below_top_10", diagnostic["reasons"])
+        self.assertIn("previously_shown_before_override", diagnostic["reasons"])
+        self.assertIn("likely_wrong_question_path", diagnostic["reasons"])
+        self.assertEqual(diagnostic_summary([diagnostic])["failed_session_count"], 1)
+
     def test_normalization_preserves_first_valid_unique_order(self) -> None:
         payload = [
             {"parent_asin": "A"}, {"parent_asin": "bad"}, {"parent_asin": "A"},

@@ -169,7 +169,7 @@ python3 -m unittest discover -v
 Expected result:
 
 ```text
-Ran 19 tests
+Ran 20 tests
 OK
 ```
 
@@ -179,8 +179,11 @@ Run the public evaluator:
 python3 -m evaluator.local_evaluator \
   --dataset data/public_set.jsonl \
   --catalog data/catalog.jsonl \
-  --output results.json
+  --output results.json \
+  --diagnostics-output results.diagnostics.json
 ```
+
+The diagnostic report records every failed session and shows whether the target was absent from BM25, pushed below the Top 10 by Nomic, left below the final cutoff, shown before an override, or affected by a question that could not reveal a remaining constraint. Stage ranks are collected without passing the target ID into the agent, so the audit cannot influence recommendations.
 
 The first run creates `.threadline_cache/product_embeddings.sqlite3`. Later runs reuse it. The cache, model, catalogue, and evaluation output are intentionally not committed to GitHub.
 
@@ -200,7 +203,7 @@ The measured defaults should normally be kept unchanged.
 
 ## Testing
 
-The 19 tests cover:
+The 20 tests cover:
 
 - Session isolation and non-repeating recommendations
 - Buying and Browsing routing
@@ -215,6 +218,7 @@ The 19 tests cover:
 - Required-model error messages
 - Embedding normalization and cache round trips
 - Evaluator response normalization and scoring
+- Per-stage failure-diagnostic classification
 
 Tests use a small deterministic embedder so unit tests stay quick. The reported public score was produced with the real Ollama model.
 

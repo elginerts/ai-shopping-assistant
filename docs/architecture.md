@@ -80,6 +80,10 @@ Query vectors are not stored because conversations are short-lived and may conta
 
 Ollama is a required dependency. Startup checks the local `/api/tags` endpoint and confirms that `nomic-embed-text` is installed. A missing service or model stops the program with the exact setup command. The agent does not silently switch to a different algorithm, so evaluation behaviour stays consistent.
 
+## Candidate-recall diagnostics
+
+The evaluator records the target's rank at the BM25, post-Nomic, final-candidate, and recommendation stages for failed sessions. It also records whether the target appeared before an intent override and whether a question could reveal any undisclosed target constraint. Ground truth stays inside the evaluator: the agent exports stage snapshots without knowing which product is correct. This keeps the diagnostic useful without creating target leakage.
+
 ## Complexity
 
 - Catalogue indexing: linear in the number of products, completed once at startup.

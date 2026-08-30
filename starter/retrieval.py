@@ -291,13 +291,15 @@ class CatalogIndex:
         top_k: int,
         conversation_query: str,
         use_semantic_reranker: bool = True,
-    ) -> tuple[list[dict], list[str]]:
+    ) -> tuple[list[dict], list[str], dict[str, list[str]]]:
         candidate_limit = min(300, max(100, top_k * 12 + len(seen_products)))
         full_query = intent.query_text() or intent.category
         lexical_limit = min(300, max(100, top_k + len(seen_products)))
         lexical_ranked = self._rank_query(conversation_query, lexical_limit, expand=False)
+        bm25_ranked = list(lexical_ranked)
         if lexical_ranked and use_semantic_reranker:
             lexical_ranked = self._semantic_rerank(conversation_query, lexical_ranked)
+        post_nomic_ranked = list(lexical_ranked)
         recommendation_ids = [
             parent_asin for parent_asin in lexical_ranked
             if parent_asin not in seen_products
@@ -339,4 +341,12 @@ class CatalogIndex:
             for parent_asin in recommendation_ids
         ]
         question_candidates = list(dict.fromkeys([*lexical_ranked, *semantic_candidates]))
-        return recommendations, question_candidates[:100]
+        retrieval_evidence = {
+            # These stage boundaries let the evaluator locate a failure
+            # without giving the search code access to the target product.
+            "bm25_ranked": bm25_ranked,
+            "post_nomic_ranked": post_nomic_ranked,
+            "final_candidates": question_candidates[:100],
+            "recommended": recommendation_ids,
+        }
+        return recommendations, question_candidates[:100], retrieval_evidence
