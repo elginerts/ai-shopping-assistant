@@ -19,17 +19,19 @@ Recommendations are returned on every turn. The shopper does not have to finish 
 
 ## What makes Threadline different
 
-Threadline is built around a **correction-aware search and decision engine**. It does not store the conversation as one large prompt. Instead, a versioned intent ledger records each preference as active, replaced, or removed. When a shopper changes direction, the next search query is rebuilt from active entries only. A phrase such as “not blue anymore” therefore cannot accidentally keep blue in the semantic query.
+Most shopping assistants treat a conversation as one growing prompt. That creates a practical problem: when a shopper says “make it black instead of blue,” the old colour can still influence the next search. Threadline treats preferences as state that can change, rather than as text that is carried forward forever.
 
-The verified system has five main parts:
+Its versioned intent ledger records every preference as active, replaced, or removed. After a correction, Threadline compiles a fresh query from active entries only. This gives the search layer a clean representation of what the shopper currently wants while preserving the history needed to explain what changed.
 
-- Field-weighted SQLite FTS5 retrieves products with strong exact evidence.
-- `nomic-embed-text` reranks only the first 16 candidates for semantic relevance.
-- A structured Top-10 pass promotes clear multi-constraint matches without adding or removing products.
-- An open first question captures requirements without guessing the wrong attribute.
-- Later questions are chosen by simulating candidate reduction and expected Top-10 gain.
+The verified request flow is deliberately staged:
 
-Every recommendation is a product ID from the read-only catalogue. The optional decision trace shows the active ledger, retrieval strategy, and reason for the selected question. Full-catalogue dense retrieval and its small pairwise model remain documented experiments; they are not required by the verified default.
+1. SQLite FTS5/BM25 finds candidates using exact product terms such as brands, colours, sizes, and materials.
+2. `nomic-embed-text` reranks only the first 16 candidates, adding semantic matching without embedding the entire catalogue on every turn.
+3. A confidence-gated constraint reranker checks the existing Top 10 for explicit multi-constraint matches. It can change order, but it cannot invent products or admit new IDs.
+4. An open first question captures the shopper’s priorities without guessing which attribute matters most.
+5. Later questions use candidate partitions to estimate which unanswered attribute would reduce uncertainty the most.
+
+Every recommendation is grounded in the read-only catalogue. The optional decision trace exposes the active ledger, retrieval stages, and question choice for debugging and evaluation. Full-catalogue dense retrieval and its pairwise promotion model are retained as reproducible experiments, but they are not required for the verified default.
 
 ## Verified public result
 
