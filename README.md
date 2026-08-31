@@ -60,7 +60,7 @@ Selected ablations:
 
 | Mode | TechnicalScore | Hit@10 | MRR | MTTC |
 |---|---:|---:|---:|---:|
-| Verified default | **0.793614** | 0.925 | **0.602381** | 3.480 |
+| Previous verified version | 0.793614 | 0.925 | 0.602381 | 3.480 |
 | Dense promotion every turn | 0.786133 | 0.925 | 0.575776 | **3.455** |
 | Dense promotion on revisions | 0.792364 | 0.925 | 0.597881 | 3.475 |
 | Learned gate + open capture | 0.798071 | 0.940 | 0.568903 | **3.130** |
@@ -69,43 +69,31 @@ Selected ablations:
 
 ## Architecture
 
-```text
-Customer message
-       |
-       v
-Versioned intent ledger + clean query compiler
-       |
-       v
-Field-weighted BM25 candidate retrieval
-       |
-       v
-Nomic reranking of the first 16 candidates
-       |
-       v
-Grounded Top 10 products
-       |
-       v
-Confidence-gated constraint reranker
-reorder only; never admit or remove products
-       |
-       v
-Open constraint capture, then targeted questions
-simulate candidate reduction + Top-10 gain
+```mermaid
+flowchart TD
+    A[Customer message] --> B[Intent tracker]
+    B --> C[Versioned intent ledger]
+    C --> D[Clean query compiler]
+    D --> E[SQLite FTS5 / BM25]
+    E --> F[Nomic reranker<br/>first 16 candidates]
+    F --> G[Grounded Top 10]
+    G --> H[Constraint reranker<br/>reorder only]
+    H --> I[Recommendations]
+    G --> J[Question planner]
+    J --> K{Useful unanswered constraint?}
+    K -->|yes| L[Ask open or targeted question]
+    K -->|no| I
+    L --> A
+    C -->|correction or removal| D
+    M[(Read-only catalogue)] --> E
+    M --> F
 ```
 
-The model does not generate products. Retrieval reads the frozen catalogue, and the final reranker can only change the order of IDs already in the Top 10.
+The ledger is the state boundary: only active preferences reach search, so replaced values do not leak into later turns. BM25 handles exact colours, sizes, brands, and product terms. Nomic handles wording differences. The final reranker can only reorder IDs already in the Top 10; it cannot invent products or expand the catalogue.
+
+The full-catalogue dense entrance and learned promotion model are separate experiments. They are documented for reproducibility but are not required by the verified default.
 
 More detail is available in [docs/architecture.md](docs/architecture.md).
-
-## How this matches the judging criteria
-
-| Criterion | Evidence in this repository |
-|---|---|
-| Technical Execution (35%) | Separate configuration, intent, retrieval, reranking, model-client, dialogue, and diagnostic components; checksum validation; 32 automated tests |
-| Innovation & Problem Insight (20%) | A versioned intent ledger and counterfactual question simulation address stale preferences and unnecessary questions; correction-aware query compilation prevents semantic prompt inertia |
-| Impact & Relevance (20%) | Handles browsing, specific buying, follow-up answers, uncertainty, non-repeating results, and changed requirements |
-| Feasibility & Practicality (15%) | Local Apache-2.0 model, NumPy in-memory search, downloadable prebuilt index, resumable builder, no paid calls, and catalogue-grounded output |
-| Presentation & Communication (10%) | Reproducible commands, architecture notes, ablation evidence, honest limitations, and readable project structure |
 
 ## Repository structure
 
@@ -270,20 +258,9 @@ Tests use a small deterministic embedder so unit tests stay quick. The reported 
 
 ## Limitations and reflection
 
-- Ollama and `nomic-embed-text` must be installed before the program starts.
-- The 274 MB model cannot fit inside the submission form's 35 MB file-upload limit, so judges must download it during setup or already have it installed.
-- The experimental dense index is distributed separately because generated vectors are too large for normal source control.
-- Dense setup assumes evaluators can download the project release asset. The organizer information sheet permits dense retrieval but does not explicitly guarantee release-asset access.
-- The learned dense gate scored 0.798071 versus 0.798992 for the simpler default. It remains a reproducible experiment rather than weakening deployment.
-- Semantic reranking improved ranking quality but did not improve Hit Rate@10 on the public set.
-- Open constraint capture reduced wrong-question paths from nine failed sessions to three. Slot-specific counterfactual questions handle later turns.
-- Structured reranking relies on explicit catalogue text. Weak or incomplete metadata keeps the original ranking unchanged.
-- Intent Override and Boundary sessions remain the weakest scenarios.
-- The intent parser targets the challenge's clean English turns and needs more work for multilingual queries, slang, and spelling errors.
-- Catalogue metadata is incomplete, so aggressive hard filtering can remove useful products.
-- There is no graphical interface because the supplied challenge evaluates a headless agent.
+**Candidate recall versus ranking precision.** Dense retrieval can find products that BM25 misses, but promoting those candidates too aggressively lowers MRR. The current default keeps dense promotion experimental and protects the lexical ranking. Given more time, I would calibrate the promotion threshold on a separate validation split and use confidence estimates to admit semantic challengers only when the expected recall gain is worth the ranking risk.
 
-With more time, I would calibrate the challenger margin on a separate validation split, add multilingual intent tests, compress the index, and build a product-card demo that shows why a semantic challenger was promoted.
+**Intent Override robustness.** The ledger removes stale preferences and recompiles the query, but a desired product can still be absent from the original lexical candidate pool after an abrupt correction. Given more time, I would add a correction-specific candidate expansion pass, then measure its recall improvement against the extra embedding work and per-turn latency.
 
 ## External service and model disclosure
 
