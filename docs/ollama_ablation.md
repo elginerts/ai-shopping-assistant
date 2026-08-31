@@ -35,3 +35,15 @@ The unrestricted planner found one more Boundary target, but it asked less answe
 - Generated product cache after the experiments: about 21 MB.
 
 Runtime varies with hardware and how many candidate embeddings are already cached. These measurements include the complete 200-session evaluator, not a single request.
+
+## Full-catalogue dense challenger ablation
+
+The complete 50,000-product Nomic index found five failed targets that BM25 missed. Admission was the limiting step: broad promotion changed 557 turn slates and reduced MRR, while correction-only promotion changed 22 slates but promoted no correct target.
+
+| Policy | TechnicalScore | Hit@10 | MRR | MTTC | Promotion turns |
+|---|---:|---:|---:|---:|---:|
+| Verified default | **0.793614** | 0.925 | **0.602381** | 3.480 | 0 |
+| Dense every turn | 0.786133 | 0.925 | 0.575776 | **3.455** | 557 |
+| Dense on revisions | 0.792364 | 0.925 | 0.597881 | 3.475 | 22 |
+
+The code, portable index builder, and diagnostics remain available through `THREADLINE_DENSE_MODE=challenger`. The measured default stays off because an interesting retrieval idea is not a deployment improvement until its final ranking evidence is stronger.

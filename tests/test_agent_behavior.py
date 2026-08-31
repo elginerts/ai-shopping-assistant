@@ -73,6 +73,7 @@ class AgentBehaviorTest(unittest.TestCase):
             "".join(json.dumps(product) + "\n" for product in products),
             encoding="utf-8",
         )
+        self.catalog_path = catalog_path
         embedder = FakeEmbedder()
         dense_path = Path(self.temp_directory.name) / "dense_index.npz"
         dense_vectors = embedder.embed([
@@ -90,6 +91,7 @@ class AgentBehaviorTest(unittest.TestCase):
             catalog_path,
             embedder=embedder,
             dense_index_path=dense_path,
+            dense_mode="challenger",
         )
 
     def tearDown(self) -> None:
@@ -104,6 +106,24 @@ class AgentBehaviorTest(unittest.TestCase):
 
         self.assertEqual(self.agent._sessions["customer_two"]["intent"].category, "")
         self.assertEqual(self.agent._sessions["customer_one"]["intent"].category, "running shoes")
+
+    def test_verified_default_does_not_require_the_full_dense_index(self) -> None:
+        default_agent = Agent(
+            self.catalog_path,
+            embedder=FakeEmbedder(),
+            dense_mode="off",
+        )
+        try:
+            default_agent.reset("default", {})
+            response = default_agent.respond("default", "I need shoes.", 1, 2)
+        finally:
+            default_agent.connection.close()
+
+        self.assertTrue(response["recommendations"])
+        self.assertEqual(
+            response["decision_trace"]["retrieval"]["strategy"],
+            "bm25_plus_nomic",
+        )
 
     def test_router_separates_buying_and_browsing_requests(self) -> None:
         self.agent.reset("buyer", {})
@@ -208,6 +228,7 @@ class AgentBehaviorTest(unittest.TestCase):
 
     def test_dense_challenger_keeps_the_incumbent_head(self) -> None:
         intent = ShoppingIntent(category="shoes")
+        intent.changed = True
         query = self.agent.embedder.embed(["search_query: winter hiking footwear"])[0]
         dense_results = self.agent.index.dense_index.search(query, limit=3)
         self.agent.index.promotion_margin = -1.0
@@ -218,6 +239,7 @@ class AgentBehaviorTest(unittest.TestCase):
             query,
             intent,
             set(),
+            allow_promotion=True,
         )
 
         self.assertEqual(promoted[0], "SHOE_RED")

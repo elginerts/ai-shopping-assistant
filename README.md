@@ -41,7 +41,7 @@ Other design choices include:
 
 ## Last verified public result
 
-These measurements are from commit `f5f466b`, before full-catalogue dense retrieval was added. The new required dense path must be evaluated after building the complete index; no improved score is claimed yet.
+These measurements remain the deployed default. Full-catalogue dense retrieval is retained as an experimental mode because both measured promotion policies scored below this result.
 
 | Metric | Starter baseline | Before Ollama | Threadline + Ollama |
 |---|---:|---:|---:|
@@ -63,6 +63,14 @@ Scenario results:
 The first full run on the development Mac took about 4 minutes 22 seconds while building a 21 MB embedding cache. The final warm-cache verification took about 40 seconds. Hardware will affect these timings.
 
 Public-set tuning can overfit, so these numbers are not a promise about the private set. The ablations and rejected settings are documented in [docs/ollama_ablation.md](docs/ollama_ablation.md).
+
+Dense-retrieval ablation:
+
+| Mode | TechnicalScore | Hit@10 | MRR | MTTC |
+|---|---:|---:|---:|---:|
+| Verified default | **0.793614** | 0.925 | **0.602381** | 3.480 |
+| Dense promotion every turn | 0.786133 | 0.925 | 0.575776 | **3.455** |
+| Dense promotion on revisions | 0.792364 | 0.925 | 0.597881 | 3.475 |
 
 ## Architecture
 
@@ -99,7 +107,7 @@ More detail is available in [docs/architecture.md](docs/architecture.md).
 
 | Criterion | Evidence in this repository |
 |---|---|
-| Technical Execution (35%) | Separate intent, retrieval, dense-index, model-client, dialogue, and diagnostic components; two retrieval entrances; checksum validation; 23 automated tests |
+| Technical Execution (35%) | Separate intent, retrieval, dense-index, model-client, dialogue, and diagnostic components; two retrieval entrances; checksum validation; 24 automated tests |
 | Innovation & Problem Insight (20%) | A versioned intent ledger and counterfactual question simulation address stale preferences and unnecessary questions; correction-aware query compilation prevents semantic prompt inertia |
 | Impact & Relevance (20%) | Handles browsing, specific buying, follow-up answers, uncertainty, non-repeating results, and changed requirements |
 | Feasibility & Practicality (15%) | Local Apache-2.0 model, NumPy in-memory search, downloadable prebuilt index, resumable builder, no paid calls, and catalogue-grounded output |
@@ -173,7 +181,7 @@ Start Ollama if it is not already running:
 ollama serve
 ```
 
-Download the required prebuilt index from the project release, then verify it:
+The verified default does not require the full dense index. To reproduce the experimental dense mode, download the prebuilt release index and verify it:
 
 ```bash
 python3 -m scripts.download_dense_index --url <release-asset-url>
@@ -198,7 +206,7 @@ python3 -m unittest discover -v
 Expected result:
 
 ```text
-Ran 23 tests
+Ran 24 tests
 OK
 ```
 
@@ -214,7 +222,7 @@ python3 -m evaluator.local_evaluator \
 
 The diagnostic report records every failed session and shows whether the target was absent from BM25, pushed below the Top 10 by Nomic, left below the final cutoff, shown before an override, or affected by a question that could not reveal a remaining constraint. Stage ranks are collected without passing the target ID into the agent, so the audit cannot influence recommendations.
 
-The builder creates `.threadline_cache/product_embeddings.sqlite3` and `.threadline_cache/dense_index.npz`. The cache, model, catalogue, dense index, and evaluation output are intentionally not committed to Git. The release index is required at runtime.
+The builder creates `.threadline_cache/product_embeddings.sqlite3` and `.threadline_cache/dense_index.npz`. The cache, model, catalogue, dense index, and evaluation output are intentionally not committed to Git. The release index is required only when dense challenger mode is enabled.
 
 Threadline requires Ollama and `nomic-embed-text`. There is no non-model fallback. If either is missing, startup stops with a clear command showing how to fix the setup.
 
@@ -226,6 +234,7 @@ The measured defaults should normally be kept unchanged.
 |---|---:|---|
 | `THREADLINE_SEMANTIC_WEIGHT` | `0.18` | Influence of semantic rank during reciprocal-rank fusion |
 | `THREADLINE_RERANK_LIMIT` | `16` | Number of BM25 candidates sent to the model |
+| `THREADLINE_DENSE_MODE` | `off` | `challenger` enables the measured full-catalogue experiment |
 | `THREADLINE_DENSE_INDEX` | `.threadline_cache/dense_index.npz` | Required portable dense-index path |
 | `THREADLINE_PROMOTION_MARGIN` | `0.03` | Minimum evidence advantage before a dense challenger replaces rank 10 |
 | `THREADLINE_CORRECTION_SEMANTIC` | `clean` | `clean` reranks a query compiled from active ledger slots; `lexical` is the ablation mode |
@@ -233,7 +242,7 @@ The measured defaults should normally be kept unchanged.
 
 ## Testing
 
-The 23 tests cover:
+The 24 tests cover:
 
 - Session isolation and non-repeating recommendations
 - Buying and Browsing routing
@@ -248,6 +257,7 @@ The 23 tests cover:
 - Required-model error messages
 - Embedding normalization and cache round trips
 - Dense-index round trips, semantic search, and catalogue mismatch rejection
+- Verified-default startup without a full dense index
 - Evaluator response normalization and scoring
 - Per-stage failure-diagnostic classification
 
@@ -257,9 +267,9 @@ Tests use a small deterministic embedder so unit tests stay quick. The reported 
 
 - Ollama and `nomic-embed-text` must be installed before the program starts.
 - The 274 MB model cannot fit inside the submission form's 35 MB file-upload limit, so judges must download it during setup or already have it installed.
-- The required dense index is distributed separately because generated vectors are too large for normal source control.
-- Setup assumes evaluators can download the project release asset. The organizer information sheet permits dense retrieval but does not explicitly guarantee release-asset access.
-- The dense retrieval score has not been measured yet; the previous verified result is retained for comparison until the full index is built.
+- The experimental dense index is distributed separately because generated vectors are too large for normal source control.
+- Dense setup assumes evaluators can download the project release asset. The organizer information sheet permits dense retrieval but does not explicitly guarantee release-asset access.
+- Full-catalogue dense search found five BM25 misses, but neither tested promotion gate recovered a new session without enough ranking cost. It therefore remains an honest documented experiment rather than the default.
 - Semantic reranking improved ranking quality but did not improve Hit Rate@10 on the public set.
 - Unrestricted counterfactual question selection improved Boundary recall but reduced the overall score, so the verified default uses it behind an answerability guardrail.
 - Intent Override and Boundary sessions remain the weakest scenarios.

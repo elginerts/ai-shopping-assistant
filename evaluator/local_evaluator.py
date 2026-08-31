@@ -308,6 +308,9 @@ def evaluate(
     failures: list[dict] = []
     total_prompt_tokens = 0
     total_completion_tokens = 0
+    promotion_turns = 0
+    target_promotions = 0
+    target_displacements = 0
     for sample in samples:
         session_id = f"public_{uuid.uuid4().hex}"
         agent.reset(session_id, sample["user_profile"])
@@ -337,6 +340,15 @@ def evaluate(
             ranked = normalize_recommendations(response.get("recommendations"), catalog_ids)
             snapshot_method = getattr(agent, "diagnostic_snapshot", None)
             snapshot = snapshot_method(session_id) if callable(snapshot_method) else {}
+            if snapshot.get("promoted"):
+                promotion_turns += 1
+            if target in snapshot.get("promoted", []):
+                target_promotions += 1
+            if (
+                target in snapshot.get("incumbents", [])
+                and target not in snapshot.get("recommended", [])
+            ):
+                target_displacements += 1
             remaining_attributes = _remaining_constraint_attributes(effective_sample, disclosed)
             asked_attribute = response.get("ask_attribute")
             diagnostic_turns.append({
@@ -404,6 +416,11 @@ def evaluate(
         },
         "scenario_metrics": {name: metric_summary(grouped[name]) for name in sorted(grouped)},
         "failure_diagnostic_summary": diagnostic_summary(failures),
+        "dense_promotion_summary": {
+            "promotion_turns": promotion_turns,
+            "target_promotions": target_promotions,
+            "target_displacements": target_displacements,
+        },
         "failure_diagnostics": failures,
         "sessions": sessions,
     }

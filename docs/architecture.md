@@ -6,7 +6,7 @@ This document explains why Threadline uses several small components instead of s
 
 1. `IntentTracker` writes additions, replacements, removals, exclusions, and category pivots to a versioned ledger.
 2. SQLite FTS5 retrieves exact-word incumbents from the frozen catalogue.
-3. A NumPy matrix search retrieves independent Nomic challengers from all 50,000 products.
+3. In experimental mode, a NumPy matrix search retrieves independent Nomic challengers from all 50,000 products.
 4. Nomic also reranks the first 16 lexical candidates using the same query vector.
 5. A structured margin gate may replace only the final incumbent with a clearly stronger challenger.
 6. After a correction, a fresh query is compiled from active ledger revisions before both retrieval routes run.
@@ -54,7 +54,9 @@ The official evaluator ignores extra fields. The trace is intended for debugging
 
 BM25 remains strong for exact brands, colours, sizes, and model names, while dense retrieval handles synonyms and situational language. Product embeddings are prepared once and loaded into a NumPy matrix. Each turn needs one query embedding and one optimized matrix multiplication.
 
-The existing lexical list acts as the incumbent ranking. Dense results are challengers, not an automatic replacement list. A challenger must exceed the last incumbent by a configured margin after semantic similarity and active-constraint coverage are considered. This protects the strong ranking head observed in earlier ablations.
+The existing lexical list acts as the incumbent ranking. Dense results are challengers, not an automatic replacement list. A challenger must exceed the last incumbent by a configured margin after semantic similarity and active-constraint coverage are considered.
+
+This lane is disabled by default because evaluation did not support deployment. Always-on promotion scored 0.786133, while revision-only promotion scored 0.792364; both trailed the verified 0.793614 system. Keeping the implementation and diagnostics makes the negative result reproducible without weakening the submitted default.
 
 The model cannot create a product ID because both entrances contain only IDs verified against the frozen catalogue.
 
