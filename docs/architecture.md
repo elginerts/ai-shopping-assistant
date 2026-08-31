@@ -56,7 +56,7 @@ This narrow contract protects recall: the component cannot add a product, remove
 
 ## Decision trace
 
-The optional `decision_trace` response field contains:
+Setting `THREADLINE_DECISION_TRACE=1` adds an optional `decision_trace` field containing:
 
 - Active and historical ledger entries
 - The retrieval strategy used on that turn
@@ -64,7 +64,7 @@ The optional `decision_trace` response field contains:
 - Selected question policy
 - Expected candidate reduction, expected Top-10 gain, coverage, and utility
 
-The official evaluator ignores extra fields. The trace is intended for debugging, a portfolio demo, and judge questions about how the system made a decision.
+The flag is off by default so official responses match the machine-readable API contract exactly. The trace is intended only for local debugging, a portfolio demo, and judge questions about how the system made a decision.
 
 ## Two retrieval entrances
 

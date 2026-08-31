@@ -9,6 +9,14 @@ VALID_DENSE_MODES = {"off", "challenger", "learned"}
 VALID_CORRECTION_MODES = {"lexical", "clean"}
 
 
+def _enabled(name: str, default: str = "0") -> bool:
+    # Keep boolean environment settings strict so a typo cannot change scoring.
+    value = os.getenv(name, default).strip().lower()
+    if value not in {"0", "1", "false", "true"}:
+        raise ValueError(f"{name} must be 0, 1, false, or true")
+    return value in {"1", "true"}
+
+
 @dataclass(frozen=True, slots=True)
 class AgentConfig:
     """Runtime settings collected in one place before components are built."""
@@ -22,6 +30,7 @@ class AgentConfig:
     promotion_model_path: Path
     question_policy: str
     correction_semantic_mode: str
+    emit_decision_trace: bool
 
     @classmethod
     def from_environment(
@@ -63,4 +72,5 @@ class AgentConfig:
             ),
             question_policy=os.getenv("THREADLINE_QUESTION_POLICY", "guarded"),
             correction_semantic_mode=correction_mode,
+            emit_decision_trace=_enabled("THREADLINE_DECISION_TRACE"),
         )

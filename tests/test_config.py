@@ -17,6 +17,7 @@ class AgentConfigTest(unittest.TestCase):
         self.assertEqual(0.18, config.semantic_weight)
         self.assertEqual(16, config.rerank_limit)
         self.assertEqual("guarded", config.question_policy)
+        self.assertFalse(config.emit_decision_trace)
 
     def test_explicit_dense_mode_wins_over_environment(self) -> None:
         # Tests and experiments need a reliable way to override shell settings.
@@ -30,6 +31,16 @@ class AgentConfigTest(unittest.TestCase):
         with patch.dict(
             os.environ,
             {"THREADLINE_CORRECTION_SEMANTIC": "unknown"},
+            clear=True,
+        ):
+            with self.assertRaises(ValueError):
+                AgentConfig.from_environment()
+
+    def test_invalid_trace_setting_fails_early(self) -> None:
+        # Only explicit boolean values should control extra debug output.
+        with patch.dict(
+            os.environ,
+            {"THREADLINE_DECISION_TRACE": "sometimes"},
             clear=True,
         ):
             with self.assertRaises(ValueError):

@@ -114,6 +114,7 @@ class AgentBehaviorTest(unittest.TestCase):
             dense_mode="off",
         )
         try:
+            default_agent.emit_decision_trace = True
             default_agent.reset("default", {})
             response = default_agent.respond("default", "I need shoes.", 1, 2)
         finally:
@@ -175,6 +176,7 @@ class AgentBehaviorTest(unittest.TestCase):
         self.assertEqual("replaced", blue_revision.status)
 
     def test_selective_replacement_keeps_unrelated_preferences(self) -> None:
+        self.agent.emit_decision_trace = True
         self.agent.reset("customer", {})
         self.agent.respond(
             "customer",
@@ -216,6 +218,7 @@ class AgentBehaviorTest(unittest.TestCase):
         self.assertIn("leather", " ".join(intent.slots["material"]))
 
     def test_decision_trace_explains_question_value(self) -> None:
+        self.agent.emit_decision_trace = True
         self.agent.reset("customer", {})
 
         response = self.agent.respond("customer", "I need shoes.", 1, 10)
@@ -297,7 +300,20 @@ class AgentBehaviorTest(unittest.TestCase):
 
         self.assertEqual(response["usage"], {"prompt_tokens": 0, "completion_tokens": 0})
 
+    def test_default_response_matches_the_official_contract(self) -> None:
+        # The machine-readable contract rejects undeclared top-level fields.
+        self.agent.emit_decision_trace = False
+        self.agent.reset("contract", {})
+
+        response = self.agent.respond("contract", "I need shoes.", 1, 10)
+
+        self.assertEqual(
+            {"message", "ask_attribute", "recommendations", "usage"},
+            set(response),
+        )
+
     def test_semantic_reranking_uses_clean_state_after_a_correction(self) -> None:
+        self.agent.emit_decision_trace = True
         self.agent.reset("customer", {})
         self.agent.respond("customer", "I need blue shoes.", 1, 10)
         calls_before_override = self.agent.embedder.calls

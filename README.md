@@ -188,7 +188,9 @@ starter/
 scripts/
 ├── build_dense_index.py     resumable full-catalogue index builder
 ├── download_dense_index.py  release-asset download and verification
+├── demo_session.py          reproducible three-turn backend demonstration
 ├── train_promotion_model.py reproducible public-set ranker training
+├── verify_catalog.py        frozen-catalogue checksum verification
 └── verify_dense_index.py    standalone dense-index compatibility check
 
 evaluator/
@@ -199,6 +201,7 @@ tests/                       behaviour, retrieval, model-client, cache, and eval
 docs/
 ├── architecture.md          architecture decisions and data flow
 ├── decision_engine.md       intent ledger, question planner, and decision trace
+├── devpost_description.md   draft containing the required submission details
 └── ollama_ablation.md       measured experiments, ablations, and design decisions
 ```
 
@@ -270,6 +273,12 @@ The catalogue is treated as **strictly read-only**. Threadline does not modify c
 
 If the catalogue is missing, verify and extract the participant-kit download and follow the instructions in [data/README.md](data/README.md).
 
+Confirm that the supplied catalogue is the frozen 50,000-product file:
+
+```bash
+python3 -m scripts.verify_catalog
+```
+
 ---
 
 ## Run Threadline
@@ -291,7 +300,7 @@ python3 -m unittest discover -v
 Expected result:
 
 ```text
-Ran 32 tests
+Ran 34 tests
 OK
 ```
 
@@ -416,9 +425,14 @@ The reported Threadline result uses the verified default configuration:
 THREADLINE_DENSE_MODE=off
 THREADLINE_CORRECTION_SEMANTIC=clean
 THREADLINE_QUESTION_POLICY=guarded
+THREADLINE_DECISION_TRACE=0
+```
+
+`THREADLINE_DECISION_TRACE` may be set to `1` for local debugging. It remains disabled during official evaluation so the response matches the machine-readable API contract exactly.
+
 ## Testing
 
-The 32 tests cover:
+The 34 tests cover:
 
 - Session isolation and non-repeating recommendations
 - Configuration defaults, overrides, and validation
@@ -439,8 +453,34 @@ The 32 tests cover:
 - Verified-default startup without a full dense index
 - Evaluator response normalization and scoring
 - Per-stage failure-diagnostic classification
+- Official response-schema fields and debug-trace isolation
 
 Tests use a small deterministic embedder so unit tests stay quick. The reported public score was produced with the real Ollama model.
+
+## Resource and service disclosure
+
+The verified default uses the local Ollama HTTP service on `localhost` with `nomic-embed-text`. It does not use an external model API, live credentials, or paid credits. After Ollama and the model have been installed, official scoring does not require internet access.
+
+| Item | Verified default |
+|---|---|
+| External API credentials | None |
+| Estimated paid API cost | $0 |
+| Reported generative tokens | 0 |
+| Warm evaluation time | About 40 seconds for 200 sessions |
+| First evaluation from an empty cache | About 4 minutes 22 seconds |
+| GPU requirement | None |
+
+Embedding calls are local and are not generative LLM calls, so the agent correctly reports zero prompt and completion tokens. Runtime varies by CPU and Ollama installation. The optional full-catalogue dense-index build is not part of the verified evaluation path.
+
+## Demonstrated multi-turn session
+
+The repository includes a reproducible three-turn backend demo that calls the same public agent interface used by the evaluator. It prints catalogue-grounded parent ASINs and can be used when recording the required public demo video without building a front end.
+
+Run the demo with:
+
+```bash
+python3 -m scripts.demo_session
+```
 
 ## Limitations and reflection
 
@@ -456,7 +496,7 @@ Given more time, I would add a correction-specific candidate expansion step and 
 
 ---
 
-## External service and model disclosure
+## Model licence
 
 Threadline uses **Ollama** as a required local model service running on `localhost`.
 

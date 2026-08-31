@@ -62,6 +62,7 @@ class Agent:
             mode=config.question_policy
         )
         self.correction_semantic_mode = config.correction_semantic_mode
+        self.emit_decision_trace = config.emit_decision_trace
         self._sessions: dict[str, SessionState] = {}
 
     def reset(self, session_id: str, user_profile: dict) -> None:
@@ -173,12 +174,16 @@ class Agent:
 
         route_label = "specific request" if intent.route == "buying" else "browsing request"
         message = f"I’m treating this as a {route_label}. {question_decision.question}"
-        return {
+        response = {
             "message": message,
             "ask_attribute": ask_attribute,
             "recommendations": recommendations,
             "usage": {"prompt_tokens": 0, "completion_tokens": 0},
-            "decision_trace": {
+        }
+        if self.emit_decision_trace:
+            # The official schema rejects extra fields, so explanations are
+            # available only when a developer explicitly enables them.
+            response["decision_trace"] = {
                 "intent": {
                     "route": intent.route,
                     "changed_this_turn": intent.changed,
@@ -212,8 +217,8 @@ class Agent:
                     "final_reranker": "confidence_gated_exact_constraints",
                 },
                 "clarification": question_decision.trace(),
-            },
-        }
+            }
+        return response
 
     def diagnostic_snapshot(self, session_id: str) -> dict:
         """Return stage evidence for the latest turn without exposing it in the API."""
