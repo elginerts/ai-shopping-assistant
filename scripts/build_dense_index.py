@@ -9,6 +9,7 @@ from starter.ollama_embeddings import EmbeddingCache, OllamaEmbeddingClient
 
 
 def main() -> None:
+    # Build resumably so a long local embedding job can continue after interruption.
     parser = argparse.ArgumentParser(description="Build Threadline's full Nomic index")
     parser.add_argument("--catalog", default="data/catalog.jsonl")
     parser.add_argument("--output", default=".threadline_cache/dense_index.npz")

@@ -10,6 +10,7 @@ from starter.dense_index import DenseIndex, DenseIndexError
 
 
 def main() -> None:
+    # Download to a temporary file, then verify it before replacing the local index.
     parser = argparse.ArgumentParser(description="Download Threadline's release index")
     parser.add_argument("--url", default=os.getenv("THREADLINE_DENSE_INDEX_URL"))
     parser.add_argument("--output", default=".threadline_cache/dense_index.npz")

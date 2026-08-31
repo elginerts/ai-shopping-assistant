@@ -6,6 +6,7 @@ from starter.dense_index import DenseIndex
 
 
 def main() -> None:
+    # Load performs checksum, model, dimension, and catalogue-order validation.
     parser = argparse.ArgumentParser(description="Verify a Threadline dense index")
     parser.add_argument("--catalog", default="data/catalog.jsonl")
     parser.add_argument("--index", default=".threadline_cache/dense_index.npz")

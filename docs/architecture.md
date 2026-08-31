@@ -2,6 +2,8 @@
 
 This document explains why Threadline uses several small components instead of sending the whole shopping conversation to one large model.
 
+`AgentConfig` validates environment settings before any session starts. `SessionState` gives the mutable per-shopper dictionary an explicit type contract, while the catalogue index, Ollama client, and embedding cache are shared across sessions. The public `Agent.reset` and `Agent.respond` interface remains compatible with the supplied evaluator.
+
 ## Request flow
 
 1. `IntentTracker` writes additions, replacements, removals, exclusions, and category pivots to a versioned ledger.
@@ -113,3 +115,7 @@ The evaluator records the target's rank at the BM25, post-Nomic, final-candidate
 - Counterfactual planning: linear in the first 100 candidates multiplied by the eight supported question attributes.
 - Structured reranking: linear in the Top 10 multiplied by the number of active constraints.
 - Session state: proportional to messages, ledger revisions, asked attributes, and shown product IDs for one session.
+
+## Challenge constraints
+
+The implementation stays inside the supplied scope: the catalogue is read-only, outputs use existing parent ASINs, sessions stop within the evaluator's 10-turn limit, and runtime processing is text-only. The default uses SQLite and a bounded local rerank rather than a heavy vector database. Ollama is declared as a required local service; no credentials or paid API calls are used.

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
+from starter.config import AgentConfig
 from starter.dialogue import ClarificationPolicy
 from starter.dense_index import DenseIndex
 from starter.intent import IntentTracker, ShoppingIntent
 from starter.ollama_embeddings import EmbeddingCache, OllamaEmbeddingClient
 from starter.promotion import PromotionModel
 from starter.retrieval import CatalogIndex
+from starter.session import SessionState
 
 
 class Agent:
@@ -21,41 +22,36 @@ class Agent:
         dense_index_path: str | Path | None = None,
         dense_mode: str | None = None,
     ) -> None:
+        # Configuration and dependencies are created once, then reused by all sessions.
         self.catalog_path = Path(catalog_path)
         supplied_embedder = embedder is not None
         self.embedder = embedder or OllamaEmbeddingClient()
-        self.dense_mode = dense_mode or os.getenv("THREADLINE_DENSE_MODE", "off")
-        if self.dense_mode not in {"off", "challenger", "learned"}:
-            raise ValueError("THREADLINE_DENSE_MODE must be 'off', 'challenger', or 'learned'")
+        config = AgentConfig.from_environment(dense_mode, dense_index_path)
+        self.dense_mode = config.dense_mode
         dense_index = None
         embedding_cache = None
-        cache_directory = Path(os.getenv("THREADLINE_CACHE_DIR", ".threadline_cache"))
         if self.dense_mode in {"challenger", "learned"}:
-            resolved_dense_path = Path(
-                dense_index_path
-                or os.getenv("THREADLINE_DENSE_INDEX", ".threadline_cache/dense_index.npz")
-            )
             dense_index = DenseIndex.load(
-                resolved_dense_path, self.catalog_path, self.embedder.model_name
+                config.dense_index_path,
+                self.catalog_path,
+                self.embedder.model_name,
             )
         elif not supplied_embedder:
-            cache_directory.mkdir(parents=True, exist_ok=True)
+            config.cache_directory.mkdir(parents=True, exist_ok=True)
             embedding_cache = EmbeddingCache(
-                str(cache_directory / "product_embeddings.sqlite3"),
+                str(config.cache_directory / "product_embeddings.sqlite3"),
                 self.embedder.model_name,
             )
         self.index = CatalogIndex(
             self.catalog_path,
             self.embedder,
-            semantic_weight=float(os.getenv("THREADLINE_SEMANTIC_WEIGHT", "0.18")),
-            rerank_limit=int(os.getenv("THREADLINE_RERANK_LIMIT", "16")),
+            semantic_weight=config.semantic_weight,
+            rerank_limit=config.rerank_limit,
             embedding_cache=embedding_cache,
             dense_index=dense_index,
-            promotion_margin=float(os.getenv("THREADLINE_PROMOTION_MARGIN", "0.03")),
+            promotion_margin=config.promotion_margin,
             promotion_model=(
-                PromotionModel.load(os.getenv(
-                    "THREADLINE_PROMOTION_MODEL", "models/promotion_model.json"
-                ))
+                PromotionModel.load(config.promotion_model_path)
                 if self.dense_mode == "learned"
                 else None
             ),
@@ -63,16 +59,10 @@ class Agent:
         self.connection = self.index.connection
         self.intent_tracker = IntentTracker()
         self.clarification_policy = ClarificationPolicy(
-            mode=os.getenv("THREADLINE_QUESTION_POLICY", "guarded")
+            mode=config.question_policy
         )
-        self.correction_semantic_mode = os.getenv(
-            "THREADLINE_CORRECTION_SEMANTIC", "clean"
-        )
-        if self.correction_semantic_mode not in {"lexical", "clean"}:
-            raise ValueError(
-                "THREADLINE_CORRECTION_SEMANTIC must be 'lexical' or 'clean'"
-            )
-        self._sessions: dict[str, dict] = {}
+        self.correction_semantic_mode = config.correction_semantic_mode
+        self._sessions: dict[str, SessionState] = {}
 
     def reset(self, session_id: str, user_profile: dict) -> None:
         # Every evaluator session gets isolated state. This also makes reset
@@ -90,6 +80,10 @@ class Agent:
             "last_promotion_candidates": (),
         }
 
+    def close(self) -> None:
+        # The agent owns its catalogue index and any embedding cache behind it.
+        self.index.close()
+
     def respond(
         self,
         session_id: str,
@@ -97,6 +91,7 @@ class Agent:
         turn: int,
         top_k: int,
     ) -> dict:
+        # One turn updates intent, retrieves products, chooses a question, and records evidence.
         if session_id not in self._sessions:
             raise RuntimeError("reset must be called before respond")
 
@@ -222,6 +217,7 @@ class Agent:
 
     def diagnostic_snapshot(self, session_id: str) -> dict:
         """Return stage evidence for the latest turn without exposing it in the API."""
+        # Ground truth never enters this snapshot; the evaluator joins it later.
         if session_id not in self._sessions:
             return {}
         diagnostic = self._sessions[session_id].get("last_diagnostic", {})
@@ -232,6 +228,7 @@ class Agent:
 
     def promotion_snapshot(self, session_id: str) -> tuple:
         """Return model features for the trainer without adding them to the API."""
+        # Training features stay internal and are never returned to shoppers.
         if session_id not in self._sessions:
             return ()
         return self._sessions[session_id].get("last_promotion_candidates", ())

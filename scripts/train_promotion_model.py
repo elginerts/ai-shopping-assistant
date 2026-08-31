@@ -89,6 +89,7 @@ def collect_pairs(
 
 
 def main() -> None:
+    # Keep learned promotion reproducible and separate from normal evaluation.
     parser = argparse.ArgumentParser(description="Train Threadline's small promotion ranker")
     parser.add_argument("--catalog", default="data/catalog.jsonl")
     parser.add_argument("--dataset", default="data/public_set.jsonl")

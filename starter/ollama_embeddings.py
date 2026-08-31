@@ -24,14 +24,17 @@ class OllamaEmbeddingClient:
     """Small standard-library client for Ollama's local embedding API."""
 
     def __init__(self, config: OllamaConfig | None = None) -> None:
+        # Check the local service once so setup errors appear before evaluation.
         self.config = config or OllamaConfig()
         self._check_model()
 
     @property
     def model_name(self) -> str:
+        # Expose the exact model tag used in cache and dense-index validation.
         return self.config.model
 
     def _request(self, path: str, payload: dict | None = None) -> dict:
+        # Keep HTTP handling in one place so failures use the same clear message.
         body = None if payload is None else json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             f"{self.config.base_url}{path}",
@@ -49,6 +52,7 @@ class OllamaEmbeddingClient:
             ) from error
 
     def _check_model(self) -> None:
+        # Ollama may be running without the required embedding model installed.
         response = self._request("/api/tags")
         available = {
             str(item.get("name", "")).split(":", maxsplit=1)[0]
@@ -62,6 +66,7 @@ class OllamaEmbeddingClient:
             )
 
     def embed(self, texts: list[str]) -> list[tuple[float, ...]]:
+        # Send one batch request and normalize every returned vector.
         if not texts:
             return []
         response = self._request(
@@ -75,6 +80,7 @@ class OllamaEmbeddingClient:
 
     @staticmethod
     def _normalize(vector: object) -> tuple[float, ...]:
+        # Unit vectors make dot products directly comparable as cosine scores.
         if not isinstance(vector, list) or not vector:
             raise OllamaSetupError("Ollama returned an empty embedding vector.")
         clean = tuple(float(value) for value in vector)
@@ -88,6 +94,7 @@ class EmbeddingCache:
     """Persistent product embeddings so repeat runs do not redo model work."""
 
     def __init__(self, path: str, model_name: str) -> None:
+        # Namespacing by model prevents incompatible vectors from being mixed.
         self.model_name = model_name
         self.connection = sqlite3.connect(path)
         self.connection.execute(
@@ -97,6 +104,7 @@ class EmbeddingCache:
         )
 
     def get_many(self, identifiers: list[str]) -> dict[str, tuple[float, ...]]:
+        # SQLite has a parameter limit, so candidate lists are fetched in chunks.
         if not identifiers:
             return {}
         placeholders = ",".join("?" for _ in identifiers)
@@ -111,6 +119,7 @@ class EmbeddingCache:
         }
 
     def put_many(self, vectors: dict[str, tuple[float, ...]]) -> None:
+        # One transaction keeps warm-cache writes quick and recoverable.
         rows = [
             (
                 self.model_name,
@@ -126,4 +135,5 @@ class EmbeddingCache:
         self.connection.commit()
 
     def close(self) -> None:
+        # Explicit cleanup helps repeated evaluator runs in the same process.
         self.connection.close()

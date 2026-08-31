@@ -31,14 +31,17 @@ OVERRIDE_MARKERS = (
 
 
 def _clean(value: str) -> str:
+    # Normalize whitespace before a value enters the ledger.
     return re.sub(r"\s+", " ", value).strip(" .,:;-\t\n")
 
 
 def _unique(values: list[str]) -> list[str]:
+    # Keep stable order because newer values are trimmed from the end later.
     return list(dict.fromkeys(value for value in values if value))
 
 
 def classify_attribute(value: str) -> str:
+    # The challenge provides clean text, so a compact retail lexicon is enough here.
     lowered = value.lower()
     words = set(re.findall(r"[a-z0-9.]+", lowered))
     if "budget" in words or "$" in value or re.search(r"\b(?:under|below|over|above)\s+\d", lowered):
@@ -85,12 +88,15 @@ class ShoppingIntent:
     ledger: list[SlotRevision] = field(default_factory=list)
 
     def values(self) -> list[str]:
+        # Flatten active slots in insertion order for deterministic query compilation.
         return [value for values in self.slots.values() for value in values]
 
     def query_text(self) -> str:
+        # Retired ledger entries are intentionally excluded from the search query.
         return " ".join([self.category, *self.values()]).strip()
 
     def active_state(self) -> dict[str, list[str]]:
+        # Return a JSON-friendly view for the optional public decision trace.
         state: dict[str, list[str]] = {}
         if self.category:
             state["category"] = [self.category]
@@ -111,6 +117,7 @@ class ShoppingIntent:
         source: str,
         replace_attribute: bool = False,
     ) -> None:
+        # Append revisions instead of overwriting history used for auditability.
         clean_value = _clean(value)
         if not clean_value:
             return
@@ -137,6 +144,7 @@ class ShoppingIntent:
         ))
 
     def retire_preferences(self, turn: int) -> None:
+        # A full pivot retires preferences but keeps the product category.
         for item in self.ledger:
             if item.status == "active" and item.attribute != "category":
                 item.status = "replaced"
@@ -147,6 +155,7 @@ class ShoppingIntent:
         self.budget_max = None
 
     def remove_attribute(self, attribute: str, turn: int, source: str) -> None:
+        # Record removals explicitly so they can be explained in the trace.
         for item in self.ledger:
             if item.attribute == attribute and item.status == "active":
                 item.status = "removed"
@@ -165,6 +174,7 @@ class ShoppingIntent:
         ))
 
     def has_slot(self, attribute: str) -> bool:
+        # Budget and category live outside the regular slot dictionary.
         if attribute == "category":
             return bool(self.category)
         if attribute == "budget":
@@ -182,6 +192,7 @@ class IntentTracker:
         asked_attribute: str | None,
         turn: int = 0,
     ) -> ShoppingIntent:
+        # Update the existing session object so its ledger history stays intact.
         lowered = user_message.lower()
         changed = any(marker in lowered for marker in OVERRIDE_MARKERS)
         if lowered.startswith("actually,") and "what i need is" in lowered:
@@ -245,6 +256,7 @@ class IntentTracker:
 
     @staticmethod
     def _extract_selective_replacement(message: str) -> tuple[str, str] | None:
+        # Capture patterns such as "black instead of blue" without a full reset.
         match = re.search(
             r"(?:make it |show me )?([a-z0-9$ -]{1,50}?)\s+instead of\s+([a-z0-9$ -]{1,50})(?:[.,;]|$)",
             message,
@@ -256,6 +268,7 @@ class IntentTracker:
 
     @staticmethod
     def _extract_removed_attribute(message: str) -> str | None:
+        # Attribute-level removal preserves unrelated preferences.
         lowered = message.lower()
         match = re.search(
             r"\b(material|colou?r|size|style|brand|budget|feature|use case)\s+"
@@ -268,6 +281,7 @@ class IntentTracker:
 
     @staticmethod
     def _extract_category(message: str) -> str:
+        # The evaluator uses clean shopping phrases, so a bounded pattern is sufficient.
         lowered = message.lower()
         if "what i need is:" in lowered and "looking for" not in lowered:
             return ""
@@ -284,6 +298,7 @@ class IntentTracker:
 
     @staticmethod
     def _extract_values(message: str) -> list[str]:
+        # Pull semicolon-separated requirements from the challenge dialogue format.
         markers = (
             "a key requirement is:",
             "what matters is:",
@@ -306,6 +321,7 @@ class IntentTracker:
 
     @staticmethod
     def _is_empty_preference(value: str) -> bool:
+        # Boundary replies should not become literal search constraints.
         lowered = value.lower()
         return not value or any(
             phrase in lowered
@@ -322,6 +338,7 @@ class IntentTracker:
 
     @staticmethod
     def _extract_exclusions(message: str) -> list[str]:
+        # Keep negative requirements separate from positive ranking evidence.
         exclusions: list[str] = []
         for match in re.finditer(
             r"\b(?:no|without|avoid|except)\s+([a-z][a-z0-9 -]{1,45})",
@@ -334,6 +351,7 @@ class IntentTracker:
 
     @staticmethod
     def _update_budget(intent: ShoppingIntent, value: str) -> None:
+        # Parse lower and upper bounds without rejecting products with missing prices.
         lowered = value.lower().replace(",", "")
         numbers = [float(item) for item in re.findall(r"\$?\s*(\d+(?:\.\d+)?)", lowered)]
         if not numbers:
@@ -347,6 +365,7 @@ class IntentTracker:
 
     @staticmethod
     def _choose_route(intent: ShoppingIntent, message: str) -> str:
+        # Explicit constraints indicate Buying; exploratory language stays Browsing.
         lowered = message.lower()
         if "still exploring" in lowered and not intent.values():
             return "browsing"

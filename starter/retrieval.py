@@ -15,6 +15,9 @@ from starter.structured_reranker import rerank_top_ten
 
 
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+RRF_OFFSET = 60
+MIN_CANDIDATES = 100
+MAX_CANDIDATES = 300
 STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
     "i", "in", "is", "it", "me", "my", "of", "on", "or", "please", "some",
@@ -36,6 +39,8 @@ QUERY_SYNONYMS = {
 
 
 def text(value: object) -> str:
+    # Catalogue fields use strings, lists, and dictionaries. Flattening them
+    # once keeps the indexing code below straightforward.
     if value is None:
         return ""
     if isinstance(value, dict):
@@ -46,6 +51,7 @@ def text(value: object) -> str:
 
 
 def terms(value: str) -> list[str]:
+    # Keep the first occurrence of each useful term for reproducible FTS queries.
     tokens = (
         token.lower()
         for token in TOKEN_RE.findall(value)
@@ -55,6 +61,7 @@ def terms(value: str) -> list[str]:
 
 
 def parse_price(value: object) -> float | None:
+    # Prices may be stored as numbers or display strings such as "$29.99".
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
@@ -87,6 +94,7 @@ class RetrievalEvidence:
     incumbents: tuple[str, ...]
 
     def as_dict(self) -> dict[str, list[str]]:
+        # Diagnostics cross the evaluator boundary as ordinary JSON-friendly lists.
         return {
             "bm25_ranked": list(self.bm25_ranked),
             "post_nomic_ranked": list(self.post_nomic_ranked),
@@ -134,7 +142,14 @@ class CatalogIndex:
         self._embedding_cache: dict[str, tuple[float, ...]] = {}
         self._build(Path(catalog_path))
 
+    def close(self) -> None:
+        # Close both stores together so command-line runs do not leave handles open.
+        if self.embedding_cache is not None:
+            self.embedding_cache.close()
+        self.connection.close()
+
     def _build(self, catalog_path: Path) -> None:
+        # Build one in-memory FTS table and a typed lookup in a single file pass.
         cursor = self.connection.cursor()
         cursor.execute(
             "CREATE VIRTUAL TABLE products USING fts5("
@@ -237,8 +252,8 @@ class CatalogIndex:
         # small semantic weight improves meaning matches without throwing away
         # the strong exact-match ordering from BM25.
         fused = {
-            item: 1.0 / (60 + lexical_rank)
-            + self.semantic_weight / (60 + semantic_rank[item])
+            item: 1.0 / (RRF_OFFSET + lexical_rank)
+            + self.semantic_weight / (RRF_OFFSET + semantic_rank[item])
             for lexical_rank, item in enumerate(candidates, start=1)
         }
         reranked = sorted(candidates, key=fused.get, reverse=True)
@@ -394,6 +409,7 @@ class CatalogIndex:
         return attributes
 
     def _rank_query(self, query: str, limit: int, expand: bool = True) -> list[str]:
+        # FTS5 handles exact evidence while a small synonym list bridges common wording.
         query_terms = terms(query)[:40]
         if not query_terms:
             return []
@@ -426,6 +442,7 @@ class CatalogIndex:
         return " ".join([original_query, *feedback_terms]).strip()
 
     def _valid_for_constraints(self, product: ProductRecord, intent: ShoppingIntent) -> bool:
+        # Missing metadata stays neutral; only confirmed conflicts are rejected.
         for exclusion in intent.exclusions:
             exclusion_terms = terms(exclusion)
             if exclusion_terms and all(
@@ -449,9 +466,15 @@ class CatalogIndex:
         conversation_query: str,
         use_semantic_reranker: bool = True,
     ) -> RetrievalResult:
-        candidate_limit = min(300, max(100, top_k * 12 + len(seen_products)))
+        candidate_limit = min(
+            MAX_CANDIDATES,
+            max(MIN_CANDIDATES, top_k * 12 + len(seen_products)),
+        )
         full_query = intent.query_text() or intent.category
-        lexical_limit = min(300, max(100, top_k + len(seen_products)))
+        lexical_limit = min(
+            MAX_CANDIDATES,
+            max(MIN_CANDIDATES, top_k + len(seen_products)),
+        )
         lexical_ranked = self._rank_query(conversation_query, lexical_limit, expand=False)
         bm25_ranked = list(lexical_ranked)
         query_vector = self.embedder.embed([f"search_query: {conversation_query}"])[0]
@@ -514,7 +537,10 @@ class CatalogIndex:
             fused: dict[str, float] = {}
             for query, weight in routes:
                 for rank, parent_asin in enumerate(self._rank_query(query, candidate_limit), start=1):
-                    fused[parent_asin] = fused.get(parent_asin, 0.0) + weight / (60 + rank)
+                    fused[parent_asin] = (
+                        fused.get(parent_asin, 0.0)
+                        + weight / (RRF_OFFSET + rank)
+                    )
             semantic_candidates = sorted(fused, key=fused.get, reverse=True)
             for parent_asin in semantic_candidates:
                 if len(recommendation_ids) >= top_k:

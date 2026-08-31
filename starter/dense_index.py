@@ -16,6 +16,7 @@ class DenseIndexError(RuntimeError):
 
 
 def file_sha256(path: str | Path) -> str:
+    # Stream large catalogues instead of loading the whole file into memory.
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
@@ -24,8 +25,10 @@ def file_sha256(path: str | Path) -> str:
 
 
 def semantic_product_text(product: dict) -> str:
+    # Use the same labelled field order for building and verifying embeddings.
     # Labels help Nomic distinguish a category from a feature or description.
     def flatten(value: object) -> str:
+        # Product fields may be nested, so reduce them to stable labelled text.
         if isinstance(value, dict):
             return " ".join(f"{key} {item}" for key, item in value.items())
         if isinstance(value, list):
@@ -55,6 +58,7 @@ class DenseIndex:
     positions: dict[str, int] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        # Build constant-time ID lookup once after loading the matrix.
         self.positions = {
             str(parent_asin): position
             for position, parent_asin in enumerate(self.product_ids)
@@ -67,6 +71,7 @@ class DenseIndex:
         catalog_path: str | Path,
         model_name: str,
     ) -> "DenseIndex":
+        # Validate provenance before accepting a large downloaded index.
         index_path = Path(path)
         if not index_path.exists():
             raise DenseIndexError(
@@ -109,6 +114,7 @@ class DenseIndex:
         return cls(product_ids, vectors, stored_model, stored_checksum)
 
     def search(self, query_vector: tuple[float, ...], limit: int = 50) -> list[tuple[str, float]]:
+        # One vectorized matrix product scores all 50,000 catalogue items.
         query = np.asarray(query_vector, dtype=np.float32)
         if query.shape != (self.vectors.shape[1],):
             raise DenseIndexError("Query embedding dimension does not match the dense index.")
@@ -119,6 +125,7 @@ class DenseIndex:
         return [(str(self.product_ids[pos]), float(scores[pos])) for pos in positions]
 
     def scores_for(self, product_ids: list[str], query_vector: tuple[float, ...]) -> dict[str, float]:
+        # Slice only requested rows when reranking an existing candidate slate.
         query = np.asarray(query_vector, dtype=np.float32)
         return {
             parent_asin: float(self.vectors[self.positions[parent_asin]] @ query)
@@ -134,6 +141,7 @@ def save_dense_index(
     catalog_path: str | Path,
     model_name: str,
 ) -> None:
+    # Store vectors with the metadata needed for portable startup checks.
     if not product_ids or len(product_ids) != len(vectors):
         raise DenseIndexError("Product IDs and vectors must be non-empty and aligned.")
     matrix = np.asarray(vectors, dtype=np.float32)

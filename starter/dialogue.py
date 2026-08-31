@@ -47,6 +47,7 @@ class QuestionDecision:
     counterfactual_best_attribute: str | None
 
     def trace(self) -> dict:
+        # Leave the user-facing question out of the numeric decision trace.
         result = asdict(self)
         result.pop("question")
         return result
@@ -56,6 +57,7 @@ class ClarificationPolicy:
     """Choose questions by simulating how possible answers split candidates."""
 
     def __init__(self, mode: str = "guarded", top_k: int = 10) -> None:
+        # Validate policy names during setup rather than during a conversation.
         if mode not in {"guarded", "counterfactual"}:
             raise ValueError("question policy must be 'guarded' or 'counterfactual'")
         self.mode = mode
@@ -69,6 +71,7 @@ class ClarificationPolicy:
         asked_attributes: set[str],
         adaptive: bool = False,
     ) -> QuestionDecision:
+        # Score every available question before applying the verified safety policy.
         evaluations = {
             attribute: self._simulate(attribute, candidate_ids, products)
             for attribute in QUESTION_PRIOR
@@ -156,6 +159,7 @@ class ClarificationPolicy:
         products: dict,
         asked_attributes: set[str],
     ) -> str | None:
+        # Prefer attributes that are both well covered and useful for splitting candidates.
         # This is the public-set-validated selector used as a safety layer.
         # Counterfactual metrics still run for every option and are exposed in
         # the trace, but they do not replace a proven policy without evidence.
@@ -186,6 +190,7 @@ class ClarificationPolicy:
         return best_attribute
 
     def _simulate(self, attribute: str, candidate_ids: list[str], products: dict) -> dict:
+        # Estimate the remaining candidate count for every possible answer group.
         candidate_count = len(candidate_ids)
         if candidate_count == 0:
             return self._empty_metrics(0)
@@ -227,6 +232,7 @@ class ClarificationPolicy:
 
     @staticmethod
     def _empty_metrics(candidate_count: int) -> dict:
+        # A shared empty result keeps edge-case traces consistent.
         return {
             "utility": 0.0,
             "candidate_reduction": 0.0,

@@ -19,30 +19,19 @@ Recommendations are returned on every turn. The shopper does not have to finish 
 
 ## What makes Threadline different
 
-The main idea is a **correction-aware search and decision engine**.
+Threadline is built around a **correction-aware search and decision engine**. It does not store the conversation as one large prompt. Instead, a versioned intent ledger records each preference as active, replaced, or removed. When a shopper changes direction, the next search query is rebuilt from active entries only. A phrase such as “not blue anymore” therefore cannot accidentally keep blue in the semantic query.
 
-Ollama embeddings are useful when two phrases mean the same thing but use different words. However, embedding raw corrections can preserve stale meaning, such as “blue” inside “not blue anymore.” Threadline solves this by compiling a fresh semantic query from only the active intent-ledger revisions. Retired preferences never reach the reranker again.
+The verified system has five main parts:
 
-Threadline also keeps a versioned intent ledger. Preferences are not stored as one block of chat text: every addition, replacement, and removal has a status and source turn. Before asking a follow-up question, the agent simulates the possible candidate groups for each attribute and estimates the expected candidate reduction and Top-10 confidence gain. The trace makes that decision visible instead of treating the model as a black box.
+- Field-weighted SQLite FTS5 retrieves products with strong exact evidence.
+- `nomic-embed-text` reranks only the first 16 candidates for semantic relevance.
+- A structured Top-10 pass promotes clear multi-constraint matches without adding or removing products.
+- An open first question captures requirements without guessing the wrong attribute.
+- Later questions are chosen by simulating candidate reduction and expected Top-10 gain.
 
-Other design choices include:
+Every recommendation is a product ID from the read-only catalogue. The optional decision trace shows the active ledger, retrieval strategy, and reason for the selected question. Full-catalogue dense retrieval and its small pairwise model remain documented experiments; they are not required by the verified default.
 
-- A field-weighted SQLite FTS5 index for fast catalogue retrieval
-- An independent full-catalogue Nomic entrance for meaning-based discovery
-- A margin gate that protects the lexical ranking from weak semantic challengers
-- Neural reranking over only the top 16 candidates instead of all 50,000 products
-- Reciprocal-rank fusion so BM25 and model scores can be combined safely
-- A disk cache so product embeddings are generated once and reused
-- A counterfactual question planner with a public-set-validated safety policy
-- Open constraint capture before slot-specific questions, reducing wrong-question paths
-- Confidence-gated Top-10 reranking for exact multi-constraint matches
-- A reproducible NumPy pairwise ranker for conservative dense-candidate experiments
-- A versioned intent ledger that preserves unrelated preferences during corrections
-- An optional decision trace explaining state, retrieval strategy, and question value
-- Separate memory and recommendation history for every shopper session
-- Catalogue grounding, which means the model never invents product IDs
-
-## Last verified public result
+## Verified public result
 
 These measurements are the deployed default. The opening question captures requirements without guessing a slot, while learned dense promotion remains experimental because its measured score was lower.
 
@@ -67,7 +56,7 @@ The first full run on the development Mac took about 4 minutes 22 seconds while 
 
 Public-set tuning can overfit, so these numbers are not a promise about the private set. The ablations and rejected settings are documented in [docs/ollama_ablation.md](docs/ollama_ablation.md).
 
-Dense-retrieval ablation:
+Selected ablations:
 
 | Mode | TechnicalScore | Hit@10 | MRR | MTTC |
 |---|---:|---:|---:|---:|
@@ -86,30 +75,25 @@ Customer message
        v
 Versioned intent ledger + clean query compiler
        |
-       +-------------------------+
-       |                         |
-       v                         v
-Field-weighted BM25       Full-catalogue Nomic search
-exact-word entrance       meaning-based entrance
-       |                         |
-       +------------+------------+
-                    v
-       Margin-gated challenger promotion
-       protect lexical head, replace rank 10
-                    |
-                    v
-          Grounded Top 10 products
-                    |
-                    v
-       Confidence-gated constraint reranker
-       reorder only; never admit new products
-                       |
-                       v
-          Counterfactual question planner
-     simulate candidate reduction + Top-10 gain
+       v
+Field-weighted BM25 candidate retrieval
+       |
+       v
+Nomic reranking of the first 16 candidates
+       |
+       v
+Grounded Top 10 products
+       |
+       v
+Confidence-gated constraint reranker
+reorder only; never admit or remove products
+       |
+       v
+Open constraint capture, then targeted questions
+simulate candidate reduction + Top-10 gain
 ```
 
-The model does not generate products. Both entrances return IDs from the frozen catalogue, and the promotion gate can only reorder those grounded IDs.
+The model does not generate products. Retrieval reads the frozen catalogue, and the final reranker can only change the order of IDs already in the Top 10.
 
 More detail is available in [docs/architecture.md](docs/architecture.md).
 
@@ -117,7 +101,7 @@ More detail is available in [docs/architecture.md](docs/architecture.md).
 
 | Criterion | Evidence in this repository |
 |---|---|
-| Technical Execution (35%) | Separate intent, retrieval, reranking, dense-index, model-client, dialogue, promotion, and diagnostic components; checksum validation; 29 automated tests |
+| Technical Execution (35%) | Separate configuration, intent, retrieval, reranking, model-client, dialogue, and diagnostic components; checksum validation; 32 automated tests |
 | Innovation & Problem Insight (20%) | A versioned intent ledger and counterfactual question simulation address stale preferences and unnecessary questions; correction-aware query compilation prevents semantic prompt inertia |
 | Impact & Relevance (20%) | Handles browsing, specific buying, follow-up answers, uncertainty, non-repeating results, and changed requirements |
 | Feasibility & Practicality (15%) | Local Apache-2.0 model, NumPy in-memory search, downloadable prebuilt index, resumable builder, no paid calls, and catalogue-grounded output |
@@ -127,6 +111,8 @@ More detail is available in [docs/architecture.md](docs/architecture.md).
 
 ```text
 starter/agent.py                 conversation flow and session memory
+starter/config.py                validated environment settings and defaults
+starter/session.py               typed per-session state contract
 starter/intent.py                versioned preference ledger and active intent state
 starter/retrieval.py             typed retrieval pipeline, BM25, reranking, and rank fusion
 starter/dense_index.py           portable NumPy index, verification, and dense search
@@ -154,7 +140,8 @@ You need:
 - SQLite with FTS5, which is included with normal Python installations
 - [Ollama](https://ollama.com/download)
 - The supplied `data/catalog.jsonl`
-- About 274 MB for `nomic-embed-text` and about 160 MB for the release index
+- About 274 MB for `nomic-embed-text`
+- About 160 MB more only if reproducing the optional dense experiment
 
 Install the Python dependency:
 
@@ -194,7 +181,18 @@ Start Ollama if it is not already running:
 ollama serve
 ```
 
-The verified default does not require the full dense index. To reproduce the experimental dense mode, download the prebuilt release index and verify it:
+Run the tests and public evaluator first; neither command needs the full dense index:
+
+```bash
+python3 -m unittest discover -v
+python3 -m evaluator.local_evaluator \
+  --dataset data/public_set.jsonl \
+  --catalog data/catalog.jsonl \
+  --output results.json \
+  --diagnostics-output results.diagnostics.json
+```
+
+To reproduce the optional dense experiment, download the prebuilt release index and verify it:
 
 ```bash
 python3 -m scripts.download_dense_index --url <release-asset-url>
@@ -217,32 +215,16 @@ THREADLINE_DENSE_MODE=learned python3 -m evaluator.local_evaluator
 
 The measured build time is about 53 minutes from an empty cache, or about 44 minutes with the development cache. Building is preparation work and is not performed by the evaluator.
 
-Run the tests:
-
-```bash
-python3 -m unittest discover -v
-```
-
 Expected result:
 
 ```text
-Ran 29 tests
+Ran 32 tests
 OK
-```
-
-Run the public evaluator:
-
-```bash
-python3 -m evaluator.local_evaluator \
-  --dataset data/public_set.jsonl \
-  --catalog data/catalog.jsonl \
-  --output results.json \
-  --diagnostics-output results.diagnostics.json
 ```
 
 The diagnostic report records every failed session and shows whether the target was absent from BM25, pushed below the Top 10 by Nomic, left below the final cutoff, shown before an override, or affected by a question that could not reveal a remaining constraint. Stage ranks are collected without passing the target ID into the agent, so the audit cannot influence recommendations.
 
-The builder creates `.threadline_cache/product_embeddings.sqlite3` and `.threadline_cache/dense_index.npz`. The cache, model, catalogue, dense index, and evaluation output are intentionally not committed to Git. The release index is required only when dense challenger mode is enabled.
+The builder creates `.threadline_cache/product_embeddings.sqlite3` and `.threadline_cache/dense_index.npz`. Generated caches, Ollama model files, the catalogue, dense index, and evaluation output are intentionally not committed to Git. The small experimental promotion weights are committed as readable JSON. The release index is required only when dense challenger mode is enabled.
 
 Threadline requires Ollama and `nomic-embed-text`. There is no non-model fallback. If either is missing, startup stops with a clear command showing how to fix the setup.
 
@@ -262,9 +244,10 @@ The measured defaults should normally be kept unchanged.
 
 ## Testing
 
-The 29 tests cover:
+The 32 tests cover:
 
 - Session isolation and non-repeating recommendations
+- Configuration defaults, overrides, and validation
 - Buying and Browsing routing
 - Follow-up preference updates
 - Intent correction and stale-preference removal
