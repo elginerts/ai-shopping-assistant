@@ -7,6 +7,7 @@ from starter.dialogue import ClarificationPolicy
 from starter.dense_index import DenseIndex
 from starter.intent import IntentTracker, ShoppingIntent
 from starter.ollama_embeddings import EmbeddingCache, OllamaEmbeddingClient
+from starter.promotion import PromotionModel
 from starter.retrieval import CatalogIndex
 
 
@@ -24,12 +25,12 @@ class Agent:
         supplied_embedder = embedder is not None
         self.embedder = embedder or OllamaEmbeddingClient()
         self.dense_mode = dense_mode or os.getenv("THREADLINE_DENSE_MODE", "off")
-        if self.dense_mode not in {"off", "challenger"}:
-            raise ValueError("THREADLINE_DENSE_MODE must be 'off' or 'challenger'")
+        if self.dense_mode not in {"off", "challenger", "learned"}:
+            raise ValueError("THREADLINE_DENSE_MODE must be 'off', 'challenger', or 'learned'")
         dense_index = None
         embedding_cache = None
         cache_directory = Path(os.getenv("THREADLINE_CACHE_DIR", ".threadline_cache"))
-        if self.dense_mode == "challenger":
+        if self.dense_mode in {"challenger", "learned"}:
             resolved_dense_path = Path(
                 dense_index_path
                 or os.getenv("THREADLINE_DENSE_INDEX", ".threadline_cache/dense_index.npz")
@@ -51,6 +52,13 @@ class Agent:
             embedding_cache=embedding_cache,
             dense_index=dense_index,
             promotion_margin=float(os.getenv("THREADLINE_PROMOTION_MARGIN", "0.03")),
+            promotion_model=(
+                PromotionModel.load(os.getenv(
+                    "THREADLINE_PROMOTION_MODEL", "models/promotion_model.json"
+                ))
+                if self.dense_mode == "learned"
+                else None
+            ),
         )
         self.connection = self.index.connection
         self.intent_tracker = IntentTracker()
@@ -79,6 +87,7 @@ class Agent:
             "adaptive_questions": False,
             "use_semantic_reranker": True,
             "last_diagnostic": {},
+            "last_promotion_candidates": (),
         }
 
     def respond(
@@ -145,6 +154,7 @@ class Agent:
         )
         recommendations = list(retrieval.recommendations)
         candidate_ids = list(retrieval.candidate_ids)
+        session["last_promotion_candidates"] = retrieval.promotion_candidates
 
         question_decision = self.clarification_policy.choose(
             intent=intent,
@@ -196,7 +206,7 @@ class Agent:
                     "strategy": (
                         (
                             "bm25_plus_dense_nomic"
-                            if self.dense_mode == "challenger"
+                            if self.dense_mode in {"challenger", "learned"}
                             else "bm25_plus_nomic"
                         )
                         if session["use_semantic_reranker"]
@@ -218,3 +228,9 @@ class Agent:
             key: list(value) if isinstance(value, list) else value
             for key, value in diagnostic.items()
         }
+
+    def promotion_snapshot(self, session_id: str) -> tuple:
+        """Return model features for the trainer without adding them to the API."""
+        if session_id not in self._sessions:
+            return ()
+        return self._sessions[session_id].get("last_promotion_candidates", ())

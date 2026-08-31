@@ -34,6 +34,8 @@ Other design choices include:
 - Reciprocal-rank fusion so BM25 and model scores can be combined safely
 - A disk cache so product embeddings are generated once and reused
 - A counterfactual question planner with a public-set-validated safety policy
+- Open constraint capture before slot-specific questions, reducing wrong-question paths
+- A reproducible NumPy pairwise ranker for conservative dense-candidate experiments
 - A versioned intent ledger that preserves unrelated preferences during corrections
 - An optional decision trace explaining state, retrieval strategy, and question value
 - Separate memory and recommendation history for every shopper session
@@ -41,24 +43,24 @@ Other design choices include:
 
 ## Last verified public result
 
-These measurements remain the deployed default. Full-catalogue dense retrieval is retained as an experimental mode because both measured promotion policies scored below this result.
+These measurements are the deployed default. The opening question captures requirements without guessing a slot, while learned dense promotion remains experimental because its measured score was lower.
 
-| Metric | Starter baseline | Before Ollama | Threadline + Ollama |
+| Metric | Starter baseline | Previous verified | Current default |
 |---|---:|---:|---:|
-| TechnicalScore | 0.106710 | 0.789582 | **0.793614** |
-| Hit Rate@10 | 0.125 | 0.925 | **0.925** |
-| MRR | 0.068034 | 0.589605 | **0.602381** |
-| MTTC | 9.81 | 3.49 | **3.48** |
+| TechnicalScore | 0.106710 | 0.793614 | **0.798992** |
+| Hit Rate@10 | 0.125 | 0.925 | **0.940** |
+| MRR | 0.068034 | 0.602381 | **0.573972** |
+| MTTC | 9.81 | 3.48 | **3.16** |
 | Reported generative tokens | — | 0 | **0** |
 
 Scenario results:
 
 | Scenario | Hit Rate@10 | MRR | MTTC |
 |---|---:|---:|---:|
-| Boundary | 0.6000 | 0.533333 | 6.50 |
-| Browsing | 0.9875 | 0.596637 | 2.8875 |
-| Buying | 0.9500 | 0.625342 | 2.75 |
-| Intent Override | 0.8000 | 0.579484 | 6.00 |
+| Boundary | 0.8000 | 0.549286 | 4.70 |
+| Browsing | 1.0000 | 0.577321 | 2.65 |
+| Buying | 0.9625 | 0.599246 | 2.475 |
+| Intent Override | 0.7667 | 0.505873 | 5.8333 |
 
 The first full run on the development Mac took about 4 minutes 22 seconds while building a 21 MB embedding cache. The final warm-cache verification took about 40 seconds. Hardware will affect these timings.
 
@@ -71,6 +73,8 @@ Dense-retrieval ablation:
 | Verified default | **0.793614** | 0.925 | **0.602381** | 3.480 |
 | Dense promotion every turn | 0.786133 | 0.925 | 0.575776 | **3.455** |
 | Dense promotion on revisions | 0.792364 | 0.925 | 0.597881 | 3.475 |
+| Learned gate + open capture | 0.798071 | 0.940 | 0.568903 | **3.130** |
+| Open capture, dense gate off | **0.798992** | **0.940** | **0.573972** | 3.160 |
 
 ## Architecture
 
@@ -107,7 +111,7 @@ More detail is available in [docs/architecture.md](docs/architecture.md).
 
 | Criterion | Evidence in this repository |
 |---|---|
-| Technical Execution (35%) | Separate intent, retrieval, dense-index, model-client, dialogue, and diagnostic components; two retrieval entrances; checksum validation; 24 automated tests |
+| Technical Execution (35%) | Separate intent, retrieval, dense-index, model-client, dialogue, promotion, and diagnostic components; two retrieval entrances; checksum validation; 26 automated tests |
 | Innovation & Problem Insight (20%) | A versioned intent ledger and counterfactual question simulation address stale preferences and unnecessary questions; correction-aware query compilation prevents semantic prompt inertia |
 | Impact & Relevance (20%) | Handles browsing, specific buying, follow-up answers, uncertainty, non-repeating results, and changed requirements |
 | Feasibility & Practicality (15%) | Local Apache-2.0 model, NumPy in-memory search, downloadable prebuilt index, resumable builder, no paid calls, and catalogue-grounded output |
@@ -121,8 +125,10 @@ starter/intent.py                versioned preference ledger and active intent s
 starter/retrieval.py             typed retrieval pipeline, BM25, reranking, and rank fusion
 starter/dense_index.py           portable NumPy index, verification, and dense search
 starter/ollama_embeddings.py     Ollama client and persistent embedding cache
+starter/promotion.py             portable pairwise model and feature schema
 scripts/build_dense_index.py     resumable full-catalogue index builder
 scripts/download_dense_index.py  release-asset download and verification
+scripts/train_promotion_model.py reproducible public-set ranker training
 scripts/verify_dense_index.py    standalone compatibility check
 starter/dialogue.py              counterfactual question simulation and selection
 evaluator/local_evaluator.py     organizer-provided evaluation harness
@@ -195,6 +201,13 @@ python3 -m scripts.build_dense_index
 python3 -m scripts.verify_dense_index
 ```
 
+The learned-promotion ablation can also be rebuilt and evaluated separately:
+
+```bash
+python3 -m scripts.train_promotion_model
+THREADLINE_DENSE_MODE=learned python3 -m evaluator.local_evaluator
+```
+
 The measured build time is about 53 minutes from an empty cache, or about 44 minutes with the development cache. Building is preparation work and is not performed by the evaluator.
 
 Run the tests:
@@ -206,7 +219,7 @@ python3 -m unittest discover -v
 Expected result:
 
 ```text
-Ran 24 tests
+Ran 26 tests
 OK
 ```
 
@@ -234,7 +247,7 @@ The measured defaults should normally be kept unchanged.
 |---|---:|---|
 | `THREADLINE_SEMANTIC_WEIGHT` | `0.18` | Influence of semantic rank during reciprocal-rank fusion |
 | `THREADLINE_RERANK_LIMIT` | `16` | Number of BM25 candidates sent to the model |
-| `THREADLINE_DENSE_MODE` | `off` | `challenger` enables the measured full-catalogue experiment |
+| `THREADLINE_DENSE_MODE` | `off` | `challenger` runs the hand-built gate; `learned` loads the pairwise ranker |
 | `THREADLINE_DENSE_INDEX` | `.threadline_cache/dense_index.npz` | Required portable dense-index path |
 | `THREADLINE_PROMOTION_MARGIN` | `0.03` | Minimum evidence advantage before a dense challenger replaces rank 10 |
 | `THREADLINE_CORRECTION_SEMANTIC` | `clean` | `clean` reranks a query compiled from active ledger slots; `lexical` is the ablation mode |
@@ -242,7 +255,7 @@ The measured defaults should normally be kept unchanged.
 
 ## Testing
 
-The 24 tests cover:
+The 26 tests cover:
 
 - Session isolation and non-repeating recommendations
 - Buying and Browsing routing
@@ -257,6 +270,7 @@ The 24 tests cover:
 - Required-model error messages
 - Embedding normalization and cache round trips
 - Dense-index round trips, semantic search, and catalogue mismatch rejection
+- Pairwise-ranker training and portable model round trips
 - Verified-default startup without a full dense index
 - Evaluator response normalization and scoring
 - Per-stage failure-diagnostic classification
@@ -269,9 +283,9 @@ Tests use a small deterministic embedder so unit tests stay quick. The reported 
 - The 274 MB model cannot fit inside the submission form's 35 MB file-upload limit, so judges must download it during setup or already have it installed.
 - The experimental dense index is distributed separately because generated vectors are too large for normal source control.
 - Dense setup assumes evaluators can download the project release asset. The organizer information sheet permits dense retrieval but does not explicitly guarantee release-asset access.
-- Full-catalogue dense search found five BM25 misses, but neither tested promotion gate recovered a new session without enough ranking cost. It therefore remains an honest documented experiment rather than the default.
+- The learned dense gate scored 0.798071 versus 0.798992 for the simpler default. It remains a reproducible experiment rather than weakening deployment.
 - Semantic reranking improved ranking quality but did not improve Hit Rate@10 on the public set.
-- Unrestricted counterfactual question selection improved Boundary recall but reduced the overall score, so the verified default uses it behind an answerability guardrail.
+- Open constraint capture reduced wrong-question paths from nine failed sessions to three. Slot-specific counterfactual questions handle later turns.
 - Intent Override and Boundary sessions remain the weakest scenarios.
 - The intent parser targets the challenge's clean English turns and needs more work for multilingual queries, slang, and spelling errors.
 - Catalogue metadata is incomplete, so aggressive hard filtering can remove useful products.

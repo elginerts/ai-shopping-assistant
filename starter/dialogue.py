@@ -8,6 +8,7 @@ from starter.intent import ShoppingIntent
 
 
 QUESTION_TEXT = {
+    "other": "What matters most for this purchase? You can mention any requirements or preferences.",
     "material": "Do you have a material preference?",
     "color": "Is there a color you would prefer?",
     "size": "What size or fit should I look for?",
@@ -86,12 +87,19 @@ class ClarificationPolicy:
 
         selected: str | None = None
         policy = "counterfactual"
+        if self.mode == "guarded" and not asked_attributes:
+            # A broad first question avoids guessing the wrong slot when the
+            # shopper has not yet explained what matters. Later questions stay
+            # specific and use the candidate simulation below.
+            selected = "other"
+            policy = "open_constraint_capture"
         if self.mode == "guarded" and not adaptive and len(asked_attributes) < 5:
-            for attribute in ("feature", "material", "color", "style", "size"):
-                if attribute not in asked_attributes:
-                    selected = attribute
-                    policy = "high_yield_guardrail"
-                    break
+            if selected is None:
+                for attribute in ("feature", "material", "color", "style", "size"):
+                    if attribute not in asked_attributes:
+                        selected = attribute
+                        policy = "high_yield_guardrail"
+                        break
 
         # This preserves a reliable early question when the candidate metadata
         # is sparse. After that, the simulated value decides what to ask.

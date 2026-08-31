@@ -10,6 +10,7 @@ from pathlib import Path
 from starter.dense_index import DenseIndex
 from starter.intent import COLORS, MATERIALS, USE_CASE_WORDS, ShoppingIntent
 from starter.ollama_embeddings import EmbeddingCache, OllamaEmbeddingClient
+from starter.promotion import PromotionCandidate, PromotionModel
 
 
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
@@ -103,6 +104,7 @@ class RetrievalResult:
     recommendations: tuple[dict[str, str], ...]
     candidate_ids: tuple[str, ...]
     evidence: RetrievalEvidence
+    promotion_candidates: tuple[PromotionCandidate, ...] = ()
 
 
 class CatalogIndex:
@@ -117,6 +119,7 @@ class CatalogIndex:
         embedding_cache: EmbeddingCache | None = None,
         dense_index: DenseIndex | None = None,
         promotion_margin: float = 0.03,
+        promotion_model: PromotionModel | None = None,
     ) -> None:
         self.connection = sqlite3.connect(":memory:")
         self.products: dict[str, ProductRecord] = {}
@@ -126,6 +129,7 @@ class CatalogIndex:
         self.embedding_cache = embedding_cache
         self.dense_index = dense_index
         self.promotion_margin = promotion_margin
+        self.promotion_model = promotion_model
         self._embedding_cache: dict[str, tuple[float, ...]] = {}
         self._build(Path(catalog_path))
 
@@ -288,6 +292,63 @@ class CatalogIndex:
                 return [*recommendation_ids[:-1], parent_asin]
         return recommendation_ids
 
+    def _promotion_features(
+        self,
+        parent_asin: str,
+        similarity: float,
+        dense_rank: int,
+        bm25_ranks: dict[str, int],
+        nomic_ranks: dict[str, int],
+        intent: ShoppingIntent,
+    ) -> tuple[float, ...]:
+        # These are behavioural signals, not identifiers. The same model can
+        # therefore be applied to unseen products and hidden evaluation data.
+        product = self.products[parent_asin]
+        category_terms = terms(intent.category)
+        category_hits = sum(term in product.corpus for term in category_terms)
+        category_coverage = category_hits / len(category_terms) if category_terms else 0.0
+        return (
+            similarity,
+            1.0 / dense_rank,
+            1.0 / bm25_ranks[parent_asin] if parent_asin in bm25_ranks else 0.0,
+            1.0 / nomic_ranks[parent_asin] if parent_asin in nomic_ranks else 0.0,
+            self._constraint_coverage(product, intent),
+            category_coverage,
+            float(self._valid_for_constraints(product, intent)),
+            float(intent.route == "buying"),
+            float(intent.changed or intent.selective_revision),
+        )
+
+    def _learned_dense_promotion(
+        self,
+        recommendations: list[str],
+        candidates: list[PromotionCandidate],
+        seen_products: set[str],
+    ) -> list[str]:
+        # The first nine results are protected because earlier experiments
+        # showed that broad dense promotion improves recall but damages MRR.
+        if self.promotion_model is None or len(recommendations) < 10:
+            return recommendations
+        rows = {row.parent_asin: row for row in candidates}
+        replaceable = [item for item in recommendations[9:] if item in rows]
+        challengers = [
+            row for row in candidates
+            if row.parent_asin not in recommendations and row.parent_asin not in seen_products
+        ]
+        if not replaceable or not challengers:
+            return recommendations
+        weakest = min(replaceable, key=lambda item: self.promotion_model.score(rows[item].features))
+        challenger = max(challengers, key=lambda row: self.promotion_model.score(row.features))
+        gain = (
+            self.promotion_model.score(challenger.features)
+            - self.promotion_model.score(rows[weakest].features)
+        )
+        if gain < self.promotion_model.margin:
+            return recommendations
+        revised = list(recommendations)
+        revised[revised.index(weakest)] = challenger.parent_asin
+        return revised
+
     @staticmethod
     def _attributes(product: dict, fields: dict[str, str], corpus: str) -> dict[str, tuple[str, ...]]:
         corpus_terms = set(terms(corpus))
@@ -405,8 +466,24 @@ class CatalogIndex:
             if self.dense_index is not None
             else []
         )
+        bm25_ranks = {item: rank for rank, item in enumerate(bm25_ranked, start=1)}
+        nomic_ranks = {item: rank for rank, item in enumerate(post_nomic_ranked, start=1)}
+        promotion_candidates = tuple(
+            PromotionCandidate(
+                parent_asin=parent_asin,
+                features=self._promotion_features(
+                    parent_asin, similarity, dense_rank, bm25_ranks, nomic_ranks, intent
+                ),
+            )
+            for dense_rank, (parent_asin, similarity) in enumerate(dense_results, start=1)
+            if parent_asin in self.products
+        )
         before_promotion = list(recommendation_ids)
-        if self.dense_index is not None:
+        if self.promotion_model is not None:
+            recommendation_ids = self._learned_dense_promotion(
+                recommendation_ids, list(promotion_candidates), seen_products
+            )
+        elif self.dense_index is not None:
             recommendation_ids = self._promote_dense_challenger(
                 recommendation_ids,
                 dense_results,
@@ -472,4 +549,5 @@ class CatalogIndex:
             recommendations=tuple(recommendations),
             candidate_ids=tuple(question_candidates[:100]),
             evidence=evidence,
+            promotion_candidates=promotion_candidates,
         )

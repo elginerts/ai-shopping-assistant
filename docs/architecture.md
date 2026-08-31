@@ -10,8 +10,9 @@ This document explains why Threadline uses several small components instead of s
 4. Nomic also reranks the first 16 lexical candidates using the same query vector.
 5. A structured margin gate may replace only the final incumbent with a clearly stronger challenger.
 6. After a correction, a fresh query is compiled from active ledger revisions before both retrieval routes run.
-7. `ClarificationPolicy` simulates the possible answers for every available attribute.
-8. The agent returns catalogue-grounded recommendations plus an optional decision trace.
+7. The first clarification captures any important constraint without guessing its slot.
+8. `ClarificationPolicy` then simulates the possible answers for every available attribute.
+9. The agent returns catalogue-grounded recommendations plus an optional decision trace.
 
 The retrieval boundary uses typed `RetrievalResult` and `RetrievalEvidence` objects. Recommendation IDs, planner candidates, and diagnostic stages therefore have an explicit contract instead of relying on tuple position or loosely shaped dictionaries.
 
@@ -36,7 +37,13 @@ For each possible question, the planner partitions the current candidates by the
 - Catalogue coverage for that attribute
 - An answerability prior based on observed evaluator behaviour
 
-The unrestricted planner is available for ablation, but it reduced the public TechnicalScore. The default keeps the measured high-yield opening and validated information-gain selector while still computing and exposing counterfactual values. This is deliberate: new reasoning is observable, but it does not replace a stronger policy without evidence.
+The first question is open-ended because failure diagnostics showed that a confident but incorrect slot question delayed useful evidence. It reduced wrong-question paths from nine failed sessions to three. Once the shopper answers, the planner switches to specific questions selected from candidate partitions.
+
+## Learned challenger gate
+
+The experimental gate uses a small pairwise linear model implemented with NumPy. Its inputs are dense, BM25, and Nomic ranks; semantic similarity; intent coverage; constraint validity; route; and revision state. Product IDs and session IDs are never features. `scripts/train_promotion_model.py` replays public conversations and saves inspectable JSON weights.
+
+Ranks one through nine are protected and a challenger must clear a confidence margin. The combined system scored 0.798071, slightly below the 0.798992 default, so learned promotion is available through `THREADLINE_DENSE_MODE=learned` but is not enabled automatically.
 
 ## Decision trace
 

@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "feature_names": [
+    "dense_similarity",
+    "dense_reciprocal_rank",
+    "bm25_reciprocal_rank",
+    "nomic_reciprocal_rank",
+    "constraint_coverage",
+    "category_coverage",
+    "valid_for_constraints",
+    "buying_route",
+    "revision_turn"
+  ],
+  "weights": [
+    0.07079418627139834,
+    -0.00736510029118681,
+    0.4223717897460238,
+    0.37428140011410393,
+    1.4257766629464,
+    0.3800907036151178,
+    -0.04889760780531932,
+    0.0,
+    0.0
+  ],
+  "means": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "scales": [
+    0.03924588836660582,
+    0.48410178056312114,
+    0.468266555616986,
+    0.47236369272007367,
+    0.20777028019848495,
+    0.27386228899978454,
+    0.14248607755248124,
+    1.0,
+    1.0
+  ],
+  "margin": 1.5,
+  "metadata": {
+    "training_pairs": 6174,
+    "useful_sessions": 160,
+    "seed": 2026,
+    "dataset": "public_set.jsonl",
+    "note": "Product and session identifiers are excluded from model features."
+  }
+}
