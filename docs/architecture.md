@@ -9,10 +9,11 @@ This document explains why Threadline uses several small components instead of s
 3. In experimental mode, a NumPy matrix search retrieves independent Nomic challengers from all 50,000 products.
 4. Nomic also reranks the first 16 lexical candidates using the same query vector.
 5. A structured margin gate may replace only the final incumbent with a clearly stronger challenger.
-6. After a correction, a fresh query is compiled from active ledger revisions before both retrieval routes run.
-7. The first clarification captures any important constraint without guessing its slot.
-8. `ClarificationPolicy` then simulates the possible answers for every available attribute.
-9. The agent returns catalogue-grounded recommendations plus an optional decision trace.
+6. A structured pass may reorder the existing Top 10 when one product has clearly stronger exact-constraint evidence.
+7. After a correction, a fresh query is compiled from active ledger revisions before both retrieval routes run.
+8. The first clarification captures any important constraint without guessing its slot.
+9. `ClarificationPolicy` then simulates the possible answers for every available attribute.
+10. The agent returns catalogue-grounded recommendations plus an optional decision trace.
 
 The retrieval boundary uses typed `RetrievalResult` and `RetrievalEvidence` objects. Recommendation IDs, planner candidates, and diagnostic stages therefore have an explicit contract instead of relying on tuple position or loosely shaped dictionaries.
 
@@ -44,6 +45,12 @@ The first question is open-ended because failure diagnostics showed that a confi
 The experimental gate uses a small pairwise linear model implemented with NumPy. Its inputs are dense, BM25, and Nomic ranks; semantic similarity; intent coverage; constraint validity; route; and revision state. Product IDs and session IDs are never features. `scripts/train_promotion_model.py` replays public conversations and saves inspectable JSON weights.
 
 Ranks one through nine are protected and a challenger must clear a confidence margin. The combined system scored 0.798071, slightly below the 0.798992 default, so learned promotion is available through `THREADLINE_DENSE_MODE=learned` but is not enabled automatically.
+
+## Structured Top-10 reranker
+
+The deployed final stage only considers products already admitted to the Top 10. It compares each product with active ledger values, exclusions, and budget bounds. Promotion requires at least two active constraints, at least two exact matches, no contradiction, and a clear coverage advantage over the current leader.
+
+This narrow contract protects recall: the component cannot add a product, remove a product, or change conversation timing. On the public evaluator, Hit@10 stayed at 0.940 and MTTC stayed at 3.16 while MRR improved from 0.573972 to 0.609472. TechnicalScore therefore increased from 0.798992 to 0.809642.
 
 ## Decision trace
 
@@ -104,4 +111,5 @@ The evaluator records the target's rank at the BM25, post-Nomic, final-candidate
 - Dense retrieval: one 50,000 × 768 NumPy matrix multiplication per turn.
 - Neural query work: one Nomic query embedding per turn; product vectors are prebuilt.
 - Counterfactual planning: linear in the first 100 candidates multiplied by the eight supported question attributes.
+- Structured reranking: linear in the Top 10 multiplied by the number of active constraints.
 - Session state: proportional to messages, ledger revisions, asked attributes, and shown product IDs for one session.

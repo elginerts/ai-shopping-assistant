@@ -35,6 +35,7 @@ Other design choices include:
 - A disk cache so product embeddings are generated once and reused
 - A counterfactual question planner with a public-set-validated safety policy
 - Open constraint capture before slot-specific questions, reducing wrong-question paths
+- Confidence-gated Top-10 reranking for exact multi-constraint matches
 - A reproducible NumPy pairwise ranker for conservative dense-candidate experiments
 - A versioned intent ledger that preserves unrelated preferences during corrections
 - An optional decision trace explaining state, retrieval strategy, and question value
@@ -47,9 +48,9 @@ These measurements are the deployed default. The opening question captures requi
 
 | Metric | Starter baseline | Previous verified | Current default |
 |---|---:|---:|---:|
-| TechnicalScore | 0.106710 | 0.793614 | **0.798992** |
+| TechnicalScore | 0.106710 | 0.793614 | **0.809642** |
 | Hit Rate@10 | 0.125 | 0.925 | **0.940** |
-| MRR | 0.068034 | 0.602381 | **0.573972** |
+| MRR | 0.068034 | 0.602381 | **0.609472** |
 | MTTC | 9.81 | 3.48 | **3.16** |
 | Reported generative tokens | — | 0 | **0** |
 
@@ -58,8 +59,8 @@ Scenario results:
 | Scenario | Hit Rate@10 | MRR | MTTC |
 |---|---:|---:|---:|
 | Boundary | 0.8000 | 0.549286 | 4.70 |
-| Browsing | 1.0000 | 0.577321 | 2.65 |
-| Buying | 0.9625 | 0.599246 | 2.475 |
+| Browsing | 1.0000 | 0.609196 | 2.65 |
+| Buying | 0.9625 | 0.656121 | 2.475 |
 | Intent Override | 0.7667 | 0.505873 | 5.8333 |
 
 The first full run on the development Mac took about 4 minutes 22 seconds while building a 21 MB embedding cache. The final warm-cache verification took about 40 seconds. Hardware will affect these timings.
@@ -75,6 +76,7 @@ Dense-retrieval ablation:
 | Dense promotion on revisions | 0.792364 | 0.925 | 0.597881 | 3.475 |
 | Learned gate + open capture | 0.798071 | 0.940 | 0.568903 | **3.130** |
 | Open capture, dense gate off | **0.798992** | **0.940** | **0.573972** | 3.160 |
+| Structured Top-10 reranker | **0.809642** | **0.940** | **0.609472** | **3.160** |
 
 ## Architecture
 
@@ -97,6 +99,10 @@ exact-word entrance       meaning-based entrance
                     |
                     v
           Grounded Top 10 products
+                    |
+                    v
+       Confidence-gated constraint reranker
+       reorder only; never admit new products
                        |
                        v
           Counterfactual question planner
@@ -111,7 +117,7 @@ More detail is available in [docs/architecture.md](docs/architecture.md).
 
 | Criterion | Evidence in this repository |
 |---|---|
-| Technical Execution (35%) | Separate intent, retrieval, dense-index, model-client, dialogue, promotion, and diagnostic components; two retrieval entrances; checksum validation; 26 automated tests |
+| Technical Execution (35%) | Separate intent, retrieval, reranking, dense-index, model-client, dialogue, promotion, and diagnostic components; checksum validation; 29 automated tests |
 | Innovation & Problem Insight (20%) | A versioned intent ledger and counterfactual question simulation address stale preferences and unnecessary questions; correction-aware query compilation prevents semantic prompt inertia |
 | Impact & Relevance (20%) | Handles browsing, specific buying, follow-up answers, uncertainty, non-repeating results, and changed requirements |
 | Feasibility & Practicality (15%) | Local Apache-2.0 model, NumPy in-memory search, downloadable prebuilt index, resumable builder, no paid calls, and catalogue-grounded output |
@@ -126,6 +132,7 @@ starter/retrieval.py             typed retrieval pipeline, BM25, reranking, and 
 starter/dense_index.py           portable NumPy index, verification, and dense search
 starter/ollama_embeddings.py     Ollama client and persistent embedding cache
 starter/promotion.py             portable pairwise model and feature schema
+starter/structured_reranker.py   exact-constraint Top-10 ordering
 scripts/build_dense_index.py     resumable full-catalogue index builder
 scripts/download_dense_index.py  release-asset download and verification
 scripts/train_promotion_model.py reproducible public-set ranker training
@@ -219,7 +226,7 @@ python3 -m unittest discover -v
 Expected result:
 
 ```text
-Ran 26 tests
+Ran 29 tests
 OK
 ```
 
@@ -255,7 +262,7 @@ The measured defaults should normally be kept unchanged.
 
 ## Testing
 
-The 26 tests cover:
+The 29 tests cover:
 
 - Session isolation and non-repeating recommendations
 - Buying and Browsing routing
@@ -271,6 +278,7 @@ The 26 tests cover:
 - Embedding normalization and cache round trips
 - Dense-index round trips, semantic search, and catalogue mismatch rejection
 - Pairwise-ranker training and portable model round trips
+- Structured-reranker promotion, weak-evidence stability, and exclusion safety
 - Verified-default startup without a full dense index
 - Evaluator response normalization and scoring
 - Per-stage failure-diagnostic classification
@@ -286,6 +294,7 @@ Tests use a small deterministic embedder so unit tests stay quick. The reported 
 - The learned dense gate scored 0.798071 versus 0.798992 for the simpler default. It remains a reproducible experiment rather than weakening deployment.
 - Semantic reranking improved ranking quality but did not improve Hit Rate@10 on the public set.
 - Open constraint capture reduced wrong-question paths from nine failed sessions to three. Slot-specific counterfactual questions handle later turns.
+- Structured reranking relies on explicit catalogue text. Weak or incomplete metadata keeps the original ranking unchanged.
 - Intent Override and Boundary sessions remain the weakest scenarios.
 - The intent parser targets the challenge's clean English turns and needs more work for multilingual queries, slang, and spelling errors.
 - Catalogue metadata is incomplete, so aggressive hard filtering can remove useful products.

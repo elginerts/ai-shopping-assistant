@@ -214,6 +214,7 @@ class Agent:
                     ),
                     "candidate_count": len(candidate_ids),
                     "returned_count": len(recommendations),
+                    "final_reranker": "confidence_gated_exact_constraints",
                 },
                 "clarification": question_decision.trace(),
             },

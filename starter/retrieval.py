@@ -11,6 +11,7 @@ from starter.dense_index import DenseIndex
 from starter.intent import COLORS, MATERIALS, USE_CASE_WORDS, ShoppingIntent
 from starter.ollama_embeddings import EmbeddingCache, OllamaEmbeddingClient
 from starter.promotion import PromotionCandidate, PromotionModel
+from starter.structured_reranker import rerank_top_ten
 
 
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
@@ -524,6 +525,15 @@ class CatalogIndex:
                     and self._valid_for_constraints(self.products[parent_asin], intent)
                 ):
                     recommendation_ids.append(parent_asin)
+
+        # This final pass cannot invent or admit products. It only promotes a
+        # clearly better exact-constraint match already inside the Top 10.
+        recommendation_ids = rerank_top_ten(
+            recommendation_ids,
+            self.products,
+            intent,
+            minimum_gain=0.30,
+        )
 
         recommendations = [
             {"parent_asin": parent_asin}
