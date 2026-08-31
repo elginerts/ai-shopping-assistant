@@ -232,6 +232,7 @@ def failure_diagnostic(
         and (turn["target_post_nomic_rank"] is None or turn["target_post_nomic_rank"] > TOP_K)
         for turn in eligible
     )
+    found_by_dense = any(turn.get("target_dense_rank") is not None for turn in eligible)
     below_top_10 = any(
         turn["target_final_candidate_rank"] is not None
         and turn["target_final_candidate_rank"] > TOP_K
@@ -246,6 +247,10 @@ def failure_diagnostic(
     reasons: list[str] = []
     if absent_from_bm25:
         reasons.append("absent_from_bm25_candidates")
+    if absent_from_bm25 and found_by_dense:
+        reasons.append("found_by_dense_but_not_promoted")
+    if absent_from_bm25 and not found_by_dense:
+        reasons.append("absent_from_bm25_and_dense")
     if pushed_down_by_nomic:
         reasons.append("pushed_down_by_nomic")
     if below_top_10:
@@ -348,6 +353,8 @@ def evaluate(
                 "target_bm25_rank": _rank_in(snapshot.get("bm25_ranked"), target),
                 "target_post_nomic_rank": _rank_in(snapshot.get("post_nomic_ranked"), target),
                 "target_final_candidate_rank": _rank_in(snapshot.get("final_candidates"), target),
+                "target_dense_rank": _rank_in(snapshot.get("dense_ranked"), target),
+                "target_promoted": target in snapshot.get("promoted", []),
                 "target_recommendation_rank": _rank_in(ranked, target),
                 "target_seen_before_turn": target in snapshot.get("seen_before", []),
             })

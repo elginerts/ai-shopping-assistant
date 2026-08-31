@@ -5,13 +5,13 @@ This document explains why Threadline uses several small components instead of s
 ## Request flow
 
 1. `IntentTracker` writes additions, replacements, removals, exclusions, and category pivots to a versioned ledger.
-2. SQLite FTS5 retrieves a recall-focused candidate list from the frozen catalogue.
-3. During normal discovery, `nomic-embed-text` compares the request with the top 16 products.
-4. Reciprocal-rank fusion combines the lexical and semantic positions.
-5. After a correction, a fresh query is compiled from active ledger revisions before semantic reranking.
-6. `ClarificationPolicy` simulates the possible answers for every available attribute.
-7. A validated guardrail combines expected question value with answerability evidence.
-8. The agent filters already-seen IDs and returns catalogue-grounded recommendations plus an optional decision trace.
+2. SQLite FTS5 retrieves exact-word incumbents from the frozen catalogue.
+3. A NumPy matrix search retrieves independent Nomic challengers from all 50,000 products.
+4. Nomic also reranks the first 16 lexical candidates using the same query vector.
+5. A structured margin gate may replace only the final incumbent with a clearly stronger challenger.
+6. After a correction, a fresh query is compiled from active ledger revisions before both retrieval routes run.
+7. `ClarificationPolicy` simulates the possible answers for every available attribute.
+8. The agent returns catalogue-grounded recommendations plus an optional decision trace.
 
 The retrieval boundary uses typed `RetrievalResult` and `RetrievalEvidence` objects. Recommendation IDs, planner candidates, and diagnostic stages therefore have an explicit contract instead of relying on tuple position or loosely shaped dictionaries.
 
@@ -50,11 +50,13 @@ The optional `decision_trace` response field contains:
 
 The official evaluator ignores extra fields. The trace is intended for debugging, a portfolio demo, and judge questions about how the system made a decision.
 
-## Why retrieval comes before the model
+## Two retrieval entrances
 
-Embedding every product on every turn would be slow and unnecessary. BM25 narrows the 50,000-product catalogue to a small group with strong word-level evidence. The embedding model then performs the more expensive meaning comparison only where it can change the final ranking.
+BM25 remains strong for exact brands, colours, sizes, and model names, while dense retrieval handles synonyms and situational language. Product embeddings are prepared once and loaded into a NumPy matrix. Each turn needs one query embedding and one optimized matrix multiplication.
 
-This also limits risk. The model cannot create a product ID because it only reorders IDs that already came from the catalogue index.
+The existing lexical list acts as the incumbent ranking. Dense results are challengers, not an automatic replacement list. A challenger must exceed the last incumbent by a configured margin after semantic similarity and active-constraint coverage are considered. This protects the strong ranking head observed in earlier ablations.
+
+The model cannot create a product ID because both entrances contain only IDs verified against the frozen catalogue.
 
 ## Correction-aware semantic compilation
 
@@ -68,7 +70,7 @@ The public ablation supported this choice. Compiling clean intent before reranki
 
 ## Embedding cache
 
-Product vectors are stable because the catalogue and model are fixed. `EmbeddingCache` stores normalized float vectors in SQLite using `(model, parent_asin)` as the key.
+Product vectors are stable because the catalogue and model are fixed. The builder stores progress in SQLite using `(model, parent_asin)` as the key, then exports an aligned `float32` NumPy artifact.
 
 The cache has three benefits:
 
@@ -76,7 +78,7 @@ The cache has three benefits:
 - The cache can grow gradually as new candidates are encountered.
 - Changing the model name creates a separate namespace instead of mixing incompatible vectors.
 
-Query vectors are not stored because conversations are short-lived and may contain user-specific information.
+The release artifact includes the catalogue checksum, model name, format version, product IDs, and vectors. Startup rejects incomplete, corrupt, mismatched, or duplicated indexes. Query vectors are not stored because conversations are short-lived and may contain user-specific information.
 
 ## Failure behaviour
 
@@ -90,6 +92,7 @@ The evaluator records the target's rank at the BM25, post-Nomic, final-candidate
 
 - Catalogue indexing: linear in the number of products, completed once at startup.
 - Lexical search: handled by SQLite FTS5.
-- Neural reranking: at most 16 product embeddings plus one query embedding per eligible turn.
+- Dense retrieval: one 50,000 × 768 NumPy matrix multiplication per turn.
+- Neural query work: one Nomic query embedding per turn; product vectors are prebuilt.
 - Counterfactual planning: linear in the first 100 candidates multiplied by the eight supported question attributes.
 - Session state: proportional to messages, ledger revisions, asked attributes, and shown product IDs for one session.

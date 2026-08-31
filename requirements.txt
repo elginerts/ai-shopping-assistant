@@ -1,2 +1,1 @@
-# No pip packages are needed. Ollama and nomic-embed-text are installed
-# separately because the model runs as a local service.
+numpy>=2.0,<3.0

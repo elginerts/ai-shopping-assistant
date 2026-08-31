@@ -7,8 +7,9 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from starter.dense_index import DenseIndex
 from starter.intent import COLORS, MATERIALS, USE_CASE_WORDS, ShoppingIntent
-from starter.ollama_embeddings import EmbeddingCache, OllamaEmbeddingClient
+from starter.ollama_embeddings import OllamaEmbeddingClient
 
 
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
@@ -79,6 +80,8 @@ class RetrievalEvidence:
     post_nomic_ranked: tuple[str, ...]
     final_candidates: tuple[str, ...]
     recommended: tuple[str, ...]
+    dense_ranked: tuple[str, ...]
+    promoted: tuple[str, ...]
 
     def as_dict(self) -> dict[str, list[str]]:
         return {
@@ -86,6 +89,8 @@ class RetrievalEvidence:
             "post_nomic_ranked": list(self.post_nomic_ranked),
             "final_candidates": list(self.final_candidates),
             "recommended": list(self.recommended),
+            "dense_ranked": list(self.dense_ranked),
+            "promoted": list(self.promoted),
         }
 
 
@@ -107,15 +112,18 @@ class CatalogIndex:
         embedder: OllamaEmbeddingClient,
         semantic_weight: float = 0.18,
         rerank_limit: int = 16,
-        embedding_cache: EmbeddingCache | None = None,
+        dense_index: DenseIndex | None = None,
+        promotion_margin: float = 0.03,
     ) -> None:
         self.connection = sqlite3.connect(":memory:")
         self.products: dict[str, ProductRecord] = {}
         self.embedder = embedder
         self.semantic_weight = semantic_weight
         self.rerank_limit = rerank_limit
-        self.embedding_cache = embedding_cache
-        self._embedding_cache: dict[str, tuple[float, ...]] = {}
+        if dense_index is None:
+            raise ValueError("CatalogIndex requires a dense retrieval index")
+        self.dense_index = dense_index
+        self.promotion_margin = promotion_margin
         self._build(Path(catalog_path))
 
     def _build(self, catalog_path: Path) -> None:
@@ -179,31 +187,16 @@ class CatalogIndex:
         ]
         return " ".join(part for part in parts if part.split(": ", 1)[1])[:1400]
 
-    def _semantic_rerank(self, query: str, candidate_ids: list[str]) -> list[str]:
+    def _semantic_rerank(
+        self,
+        query_vector: tuple[float, ...],
+        candidate_ids: list[str],
+    ) -> list[str]:
         candidates = candidate_ids[:self.rerank_limit]
-        if self.embedding_cache:
-            cached = self.embedding_cache.get_many([
-                item for item in candidates if item not in self._embedding_cache
-            ])
-            self._embedding_cache.update(cached)
-        missing = [item for item in candidates if item not in self._embedding_cache]
-        inputs = [f"search_query: {query}"]
-        inputs.extend(
-            f"search_document: {self.products[item].semantic_text}"
-            for item in missing
-        )
-        vectors = self.embedder.embed(inputs)
-        query_vector = vectors[0]
-        new_vectors = dict(zip(missing, vectors[1:]))
-        self._embedding_cache.update(new_vectors)
-        if self.embedding_cache and new_vectors:
-            self.embedding_cache.put_many(new_vectors)
+        similarities = self.dense_index.scores_for(candidates, query_vector)
         semantic_order = sorted(
             candidates,
-            key=lambda item: sum(
-                left * right
-                for left, right in zip(query_vector, self._embedding_cache[item])
-            ),
+            key=lambda item: similarities.get(item, -1.0),
             reverse=True,
         )
         semantic_rank = {item: rank for rank, item in enumerate(semantic_order, start=1)}
@@ -218,6 +211,50 @@ class CatalogIndex:
         }
         reranked = sorted(candidates, key=fused.get, reverse=True)
         return [*reranked, *candidate_ids[self.rerank_limit:]]
+
+    def _constraint_coverage(self, product: ProductRecord, intent: ShoppingIntent) -> float:
+        # Missing metadata stays neutral. Only words actually present in the
+        # product record count as evidence for an active preference.
+        values = [intent.category, *intent.values()]
+        matched = 0.0
+        total = 0
+        for value in values:
+            value_terms = terms(value)
+            if not value_terms:
+                continue
+            total += 1
+            hits = sum(
+                bool(re.search(rf"\b{re.escape(term)}\b", product.corpus))
+                for term in value_terms
+            )
+            matched += hits / len(value_terms)
+        return matched / total if total else 0.0
+
+    def _promote_dense_challenger(
+        self,
+        recommendation_ids: list[str],
+        dense_results: list[tuple[str, float]],
+        query_vector: tuple[float, ...],
+        intent: ShoppingIntent,
+        seen_products: set[str],
+    ) -> list[str]:
+        if len(recommendation_ids) < 2:
+            return recommendation_ids
+        incumbent_scores = self.dense_index.scores_for(recommendation_ids, query_vector)
+        weakest = recommendation_ids[-1]
+        weakest_score = incumbent_scores.get(weakest, -1.0) + 0.08 * self._constraint_coverage(
+            self.products[weakest], intent
+        )
+        for parent_asin, similarity in dense_results:
+            if parent_asin in recommendation_ids or parent_asin in seen_products:
+                continue
+            product = self.products.get(parent_asin)
+            if product is None or not self._valid_for_constraints(product, intent):
+                continue
+            challenger_score = similarity + 0.08 * self._constraint_coverage(product, intent)
+            if challenger_score >= weakest_score + self.promotion_margin:
+                return [*recommendation_ids[:-1], parent_asin]
+        return recommendation_ids
 
     @staticmethod
     def _attributes(product: dict, fields: dict[str, str], corpus: str) -> dict[str, tuple[str, ...]]:
@@ -323,13 +360,20 @@ class CatalogIndex:
         lexical_limit = min(300, max(100, top_k + len(seen_products)))
         lexical_ranked = self._rank_query(conversation_query, lexical_limit, expand=False)
         bm25_ranked = list(lexical_ranked)
+        query_vector = self.embedder.embed([f"search_query: {conversation_query}"])[0]
         if lexical_ranked and use_semantic_reranker:
-            lexical_ranked = self._semantic_rerank(conversation_query, lexical_ranked)
+            lexical_ranked = self._semantic_rerank(query_vector, lexical_ranked)
         post_nomic_ranked = list(lexical_ranked)
         recommendation_ids = [
             parent_asin for parent_asin in lexical_ranked
             if parent_asin not in seen_products
         ][:top_k]
+        dense_results = self.dense_index.search(query_vector, limit=50)
+        before_promotion = list(recommendation_ids)
+        recommendation_ids = self._promote_dense_challenger(
+            recommendation_ids, dense_results, query_vector, intent, seen_products
+        )
+        promoted = [item for item in recommendation_ids if item not in before_promotion]
 
         # Most queries have a strong lexical match. Only pay for multiple local
         # retrieval routes when the first pass cannot fill the result slate.
@@ -366,7 +410,10 @@ class CatalogIndex:
             {"parent_asin": parent_asin}
             for parent_asin in recommendation_ids
         ]
-        question_candidates = list(dict.fromkeys([*lexical_ranked, *semantic_candidates]))
+        dense_ids = [parent_asin for parent_asin, _score in dense_results]
+        question_candidates = list(dict.fromkeys([
+            *lexical_ranked, *dense_ids, *semantic_candidates
+        ]))
         # The index reports stages, but it never receives the correct target.
         # This keeps diagnostic evidence separate from recommendation logic.
         evidence = RetrievalEvidence(
@@ -374,6 +421,8 @@ class CatalogIndex:
             post_nomic_ranked=tuple(post_nomic_ranked),
             final_candidates=tuple(question_candidates[:100]),
             recommended=tuple(recommendation_ids),
+            dense_ranked=tuple(dense_ids),
+            promoted=tuple(promoted),
         )
         return RetrievalResult(
             recommendations=tuple(recommendations),

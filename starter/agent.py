@@ -4,8 +4,9 @@ import os
 from pathlib import Path
 
 from starter.dialogue import ClarificationPolicy
+from starter.dense_index import DenseIndex
 from starter.intent import IntentTracker, ShoppingIntent
-from starter.ollama_embeddings import EmbeddingCache, OllamaEmbeddingClient
+from starter.ollama_embeddings import OllamaEmbeddingClient
 from starter.retrieval import CatalogIndex
 
 
@@ -16,24 +17,26 @@ class Agent:
         self,
         catalog_path: str | Path = "data/catalog.jsonl",
         embedder: OllamaEmbeddingClient | None = None,
+        dense_index_path: str | Path | None = None,
     ) -> None:
         self.catalog_path = Path(catalog_path)
-        supplied_embedder = embedder is not None
         self.embedder = embedder or OllamaEmbeddingClient()
-        embedding_cache = None
-        if not supplied_embedder:
-            cache_directory = Path(os.getenv("THREADLINE_CACHE_DIR", ".threadline_cache"))
-            cache_directory.mkdir(parents=True, exist_ok=True)
-            embedding_cache = EmbeddingCache(
-                str(cache_directory / "product_embeddings.sqlite3"),
-                self.embedder.model_name,
-            )
+        resolved_dense_path = Path(
+            dense_index_path
+            or os.getenv("THREADLINE_DENSE_INDEX", ".threadline_cache/dense_index.npz")
+        )
+        dense_index = DenseIndex.load(
+            resolved_dense_path,
+            self.catalog_path,
+            self.embedder.model_name,
+        )
         self.index = CatalogIndex(
             self.catalog_path,
             self.embedder,
             semantic_weight=float(os.getenv("THREADLINE_SEMANTIC_WEIGHT", "0.18")),
             rerank_limit=int(os.getenv("THREADLINE_RERANK_LIMIT", "16")),
-            embedding_cache=embedding_cache,
+            dense_index=dense_index,
+            promotion_margin=float(os.getenv("THREADLINE_PROMOTION_MARGIN", "0.03")),
         )
         self.connection = self.index.connection
         self.intent_tracker = IntentTracker()
@@ -177,7 +180,7 @@ class Agent:
                 },
                 "retrieval": {
                     "strategy": (
-                        "bm25_plus_nomic"
+                        "bm25_plus_dense_nomic"
                         if session["use_semantic_reranker"]
                         else "lexical_after_correction"
                     ),

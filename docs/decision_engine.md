@@ -63,7 +63,7 @@ The unrestricted mode raised Boundary Hit@10 from 0.60 to 0.70, but reduced over
     ]
   },
   "retrieval": {
-    "strategy": "bm25_plus_nomic",
+    "strategy": "bm25_plus_dense_nomic",
     "candidate_count": 100,
     "returned_count": 10
   },

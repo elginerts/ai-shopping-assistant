@@ -2,7 +2,7 @@
 
 Threadline is a multi-turn shopping agent built for TikTok TechJam 2026 Track 4. It searches the supplied catalogue of 50,000 products, remembers what a shopper has said, asks useful follow-up questions, and adjusts when the shopper changes their mind.
 
-The project uses the open-source `nomic-embed-text` model through Ollama. Everything runs locally, so there are no API keys, paid credits, or external requests during evaluation.
+The project uses the open-source `nomic-embed-text` model through Ollama. Runtime search stays local, so there are no API keys, paid credits, or external requests after setup.
 
 ## The problem I wanted to solve
 
@@ -28,6 +28,8 @@ Threadline also keeps a versioned intent ledger. Preferences are not stored as o
 Other design choices include:
 
 - A field-weighted SQLite FTS5 index for fast catalogue retrieval
+- An independent full-catalogue Nomic entrance for meaning-based discovery
+- A margin gate that protects the lexical ranking from weak semantic challengers
 - Neural reranking over only the top 16 candidates instead of all 50,000 products
 - Reciprocal-rank fusion so BM25 and model scores can be combined safely
 - A disk cache so product embeddings are generated once and reused
@@ -37,9 +39,9 @@ Other design choices include:
 - Separate memory and recommendation history for every shopper session
 - Catalogue grounding, which means the model never invents product IDs
 
-## Verified public result
+## Last verified public result
 
-The latest result uses the organizer-provided 200-session public development set.
+These measurements are from commit `f5f466b`, before full-catalogue dense retrieval was added. The new required dense path must be evaluated after building the complete index; no improved score is claimed yet.
 
 | Metric | Starter baseline | Before Ollama | Threadline + Ollama |
 |---|---:|---:|---:|
@@ -68,28 +70,28 @@ Public-set tuning can overfit, so these numbers are not a promise about the priv
 Customer message
        |
        v
-Versioned intent ledger
-  active + replaced + removed preferences
+Versioned intent ledger + clean query compiler
        |
-       v
-Field-weighted BM25 candidate search
-       |
-       +------------------------------+
-       | normal request               | corrected request
-       v                              v
-Ollama semantic reranker         Active-ledger query compiler
-nomic-embed-text                 then Nomic semantic reranking
-       |                              |
-       +---------------+--------------+
-                       v
-             Grounded Top 10 products
+       +-------------------------+
+       |                         |
+       v                         v
+Field-weighted BM25       Full-catalogue Nomic search
+exact-word entrance       meaning-based entrance
+       |                         |
+       +------------+------------+
+                    v
+       Margin-gated challenger promotion
+       protect lexical head, replace rank 10
+                    |
+                    v
+          Grounded Top 10 products
                        |
                        v
           Counterfactual question planner
      simulate candidate reduction + Top-10 gain
 ```
 
-The model does not generate recommendations directly. It only compares the meaning of a customer request with real catalogue products returned by BM25.
+The model does not generate products. Both entrances return IDs from the frozen catalogue, and the promotion gate can only reorder those grounded IDs.
 
 More detail is available in [docs/architecture.md](docs/architecture.md).
 
@@ -97,10 +99,10 @@ More detail is available in [docs/architecture.md](docs/architecture.md).
 
 | Criterion | Evidence in this repository |
 |---|---|
-| Technical Execution (35%) | Separate intent, retrieval, model-client, dialogue, and cache components; bounded neural reranking; clear startup errors; 19 automated tests; measured evaluation |
+| Technical Execution (35%) | Separate intent, retrieval, dense-index, model-client, dialogue, and diagnostic components; two retrieval entrances; checksum validation; 23 automated tests |
 | Innovation & Problem Insight (20%) | A versioned intent ledger and counterfactual question simulation address stale preferences and unnecessary questions; correction-aware query compilation prevents semantic prompt inertia |
 | Impact & Relevance (20%) | Handles browsing, specific buying, follow-up answers, uncertainty, non-repeating results, and changed requirements |
-| Feasibility & Practicality (15%) | Local Apache-2.0 model, no paid calls, reusable embedding cache, small candidate window, and catalogue-grounded output |
+| Feasibility & Practicality (15%) | Local Apache-2.0 model, NumPy in-memory search, downloadable prebuilt index, resumable builder, no paid calls, and catalogue-grounded output |
 | Presentation & Communication (10%) | Reproducible commands, architecture notes, ablation evidence, honest limitations, and readable project structure |
 
 ## Repository structure
@@ -109,7 +111,11 @@ More detail is available in [docs/architecture.md](docs/architecture.md).
 starter/agent.py                 conversation flow and session memory
 starter/intent.py                versioned preference ledger and active intent state
 starter/retrieval.py             typed retrieval pipeline, BM25, reranking, and rank fusion
+starter/dense_index.py           portable NumPy index, verification, and dense search
 starter/ollama_embeddings.py     Ollama client and persistent embedding cache
+scripts/build_dense_index.py     resumable full-catalogue index builder
+scripts/download_dense_index.py  release-asset download and verification
+scripts/verify_dense_index.py    standalone compatibility check
 starter/dialogue.py              counterfactual question simulation and selection
 evaluator/local_evaluator.py     organizer-provided evaluation harness
 tests/                           behaviour, model-client, cache, and evaluator tests
@@ -123,10 +129,17 @@ docs/decision_engine.md          ledger, planner formula, and trace format
 You need:
 
 - Python 3.10 or newer
+- NumPy 2.x
 - SQLite with FTS5, which is included with normal Python installations
 - [Ollama](https://ollama.com/download)
 - The supplied `data/catalog.jsonl`
-- About 274 MB for `nomic-embed-text`, plus space for the generated cache
+- About 274 MB for `nomic-embed-text` and about 160 MB for the release index
+
+Install the Python dependency:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
 
 On macOS with Homebrew:
 
@@ -148,7 +161,7 @@ Confirm that the model is ready:
 ollama list
 ```
 
-The output should include `nomic-embed-text`. No Python packages need to be installed.
+The output should include `nomic-embed-text`.
 
 If the catalogue is missing, verify and extract the participant-kit download, then place it at `data/catalog.jsonl` as described in [data/README.md](data/README.md).
 
@@ -160,6 +173,22 @@ Start Ollama if it is not already running:
 ollama serve
 ```
 
+Download the required prebuilt index from the project release, then verify it:
+
+```bash
+python3 -m scripts.download_dense_index --url <release-asset-url>
+python3 -m scripts.verify_dense_index
+```
+
+To reproduce the artifact locally instead, run the separate builder. It resumes from the SQLite embedding cache if interrupted:
+
+```bash
+python3 -m scripts.build_dense_index
+python3 -m scripts.verify_dense_index
+```
+
+The measured build time is about 53 minutes from an empty cache, or about 44 minutes with the development cache. Building is preparation work and is not performed by the evaluator.
+
 Run the tests:
 
 ```bash
@@ -169,7 +198,7 @@ python3 -m unittest discover -v
 Expected result:
 
 ```text
-Ran 20 tests
+Ran 23 tests
 OK
 ```
 
@@ -185,7 +214,7 @@ python3 -m evaluator.local_evaluator \
 
 The diagnostic report records every failed session and shows whether the target was absent from BM25, pushed below the Top 10 by Nomic, left below the final cutoff, shown before an override, or affected by a question that could not reveal a remaining constraint. Stage ranks are collected without passing the target ID into the agent, so the audit cannot influence recommendations.
 
-The first run creates `.threadline_cache/product_embeddings.sqlite3`. Later runs reuse it. The cache, model, catalogue, and evaluation output are intentionally not committed to GitHub.
+The builder creates `.threadline_cache/product_embeddings.sqlite3` and `.threadline_cache/dense_index.npz`. The cache, model, catalogue, dense index, and evaluation output are intentionally not committed to Git. The release index is required at runtime.
 
 Threadline requires Ollama and `nomic-embed-text`. There is no non-model fallback. If either is missing, startup stops with a clear command showing how to fix the setup.
 
@@ -197,13 +226,14 @@ The measured defaults should normally be kept unchanged.
 |---|---:|---|
 | `THREADLINE_SEMANTIC_WEIGHT` | `0.18` | Influence of semantic rank during reciprocal-rank fusion |
 | `THREADLINE_RERANK_LIMIT` | `16` | Number of BM25 candidates sent to the model |
+| `THREADLINE_DENSE_INDEX` | `.threadline_cache/dense_index.npz` | Required portable dense-index path |
+| `THREADLINE_PROMOTION_MARGIN` | `0.03` | Minimum evidence advantage before a dense challenger replaces rank 10 |
 | `THREADLINE_CORRECTION_SEMANTIC` | `clean` | `clean` reranks a query compiled from active ledger slots; `lexical` is the ablation mode |
-| `THREADLINE_CACHE_DIR` | `.threadline_cache` | Location of the reusable product embedding cache |
 | `THREADLINE_QUESTION_POLICY` | `guarded` | `guarded` keeps the verified policy; `counterfactual` enables the experimental unrestricted planner |
 
 ## Testing
 
-The 20 tests cover:
+The 23 tests cover:
 
 - Session isolation and non-repeating recommendations
 - Buying and Browsing routing
@@ -217,6 +247,7 @@ The 20 tests cover:
 - Budget and exclusion tracking
 - Required-model error messages
 - Embedding normalization and cache round trips
+- Dense-index round trips, semantic search, and catalogue mismatch rejection
 - Evaluator response normalization and scoring
 - Per-stage failure-diagnostic classification
 
@@ -226,7 +257,9 @@ Tests use a small deterministic embedder so unit tests stay quick. The reported 
 
 - Ollama and `nomic-embed-text` must be installed before the program starts.
 - The 274 MB model cannot fit inside the submission form's 35 MB file-upload limit, so judges must download it during setup or already have it installed.
-- The first evaluation is slower while the product cache is populated.
+- The required dense index is distributed separately because generated vectors are too large for normal source control.
+- Setup assumes evaluators can download the project release asset. The organizer information sheet permits dense retrieval but does not explicitly guarantee release-asset access.
+- The dense retrieval score has not been measured yet; the previous verified result is retained for comparison until the full index is built.
 - Semantic reranking improved ranking quality but did not improve Hit Rate@10 on the public set.
 - Unrestricted counterfactual question selection improved Boundary recall but reduced the overall score, so the verified default uses it behind an answerability guardrail.
 - Intent Override and Boundary sessions remain the weakest scenarios.
@@ -234,7 +267,7 @@ Tests use a small deterministic embedder so unit tests stay quick. The reported 
 - Catalogue metadata is incomplete, so aggressive hard filtering can remove useful products.
 - There is no graphical interface because the supplied challenge evaluates a headless agent.
 
-With more time, I would train a small shopping-specific reranker on a separate validation split, add multilingual intent tests, compress the embedding cache, and build a product-card demo that shows how the live intent and ranking change after every message.
+With more time, I would calibrate the challenger margin on a separate validation split, add multilingual intent tests, compress the index, and build a product-card demo that shows why a semantic challenger was promoted.
 
 ## External service and model disclosure
 

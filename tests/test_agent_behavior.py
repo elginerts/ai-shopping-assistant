@@ -6,12 +6,15 @@ import unittest
 from pathlib import Path
 
 from starter.agent import Agent
+from starter.dense_index import save_dense_index, semantic_product_text
+from starter.intent import ShoppingIntent
 
 
 class FakeEmbedder:
     # Tests use predictable character counts instead of starting Ollama.
     def __init__(self) -> None:
         self.calls = 0
+        self.model_name = "nomic-embed-text"
 
     def embed(self, texts: list[str]) -> list[tuple[float, ...]]:
         self.calls += 1
@@ -70,7 +73,24 @@ class AgentBehaviorTest(unittest.TestCase):
             "".join(json.dumps(product) + "\n" for product in products),
             encoding="utf-8",
         )
-        self.agent = Agent(catalog_path, embedder=FakeEmbedder())
+        embedder = FakeEmbedder()
+        dense_path = Path(self.temp_directory.name) / "dense_index.npz"
+        dense_vectors = embedder.embed([
+            f"search_document: {semantic_product_text(product)}"
+            for product in products
+        ])
+        save_dense_index(
+            dense_path,
+            [product["parent_asin"] for product in products],
+            dense_vectors,
+            catalog_path,
+            embedder.model_name,
+        )
+        self.agent = Agent(
+            catalog_path,
+            embedder=embedder,
+            dense_index_path=dense_path,
+        )
 
     def tearDown(self) -> None:
         self.agent.connection.close()
@@ -186,6 +206,24 @@ class AgentBehaviorTest(unittest.TestCase):
         self.assertLessEqual(clarification["expected_candidate_reduction"], 1.0)
         self.assertIn("counterfactual_best_attribute", clarification)
 
+    def test_dense_challenger_keeps_the_incumbent_head(self) -> None:
+        intent = ShoppingIntent(category="shoes")
+        query = self.agent.embedder.embed(["search_query: winter hiking footwear"])[0]
+        dense_results = self.agent.index.dense_index.search(query, limit=3)
+        self.agent.index.promotion_margin = -1.0
+
+        promoted = self.agent.index._promote_dense_challenger(
+            ["SHOE_RED", "SHOE_BLACK"],
+            dense_results,
+            query,
+            intent,
+            set(),
+        )
+
+        self.assertEqual(promoted[0], "SHOE_RED")
+        self.assertEqual(len(promoted), 2)
+        self.assertNotEqual(promoted[1], "SHOE_BLACK")
+
     def test_agent_recommends_while_asking_a_question(self) -> None:
         self.agent.reset("customer", {})
 
@@ -251,7 +289,7 @@ class AgentBehaviorTest(unittest.TestCase):
 
         self.assertGreater(self.agent.embedder.calls, calls_before_override)
         self.assertEqual(
-            "bm25_plus_nomic",
+            "bm25_plus_dense_nomic",
             self.agent.respond(
                 "customer",
                 "I don't have an additional preference.",
