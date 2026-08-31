@@ -1,4 +1,4 @@
-# Threadline — Local AI Shopping Copilot
+# Threadline: A Local AI Shopping Copilot
 
 Threadline is a multi-turn shopping agent built for TikTok TechJam 2026 Track 4. It searches the supplied catalogue of 50,000 products, remembers what a shopper has said, asks useful follow-up questions, and adjusts when the shopper changes their mind.
 
